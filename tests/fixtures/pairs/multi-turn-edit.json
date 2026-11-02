@@ -1,0 +1,34 @@
+{
+  "description": "Edit at turn k → prompt=turns[0..k-1], chosen=[edited], rejected=[original]",
+  "records": [
+    {
+      "messages": [
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Hi there!" },
+        { "role": "user", "content": "How are you?" },
+        { "role": "assistant", "content": "I'm doing well, thanks for asking." }
+      ]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "kept",
+      "edits": {
+        "messages[3].content": "I'm doing great, thank you for asking!"
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [],
+  "expectedEditPairs": [
+    {
+      "prompt": [
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Hi there!" },
+        { "role": "user", "content": "How are you?" }
+      ],
+      "chosen": [{ "role": "assistant", "content": "I'm doing great, thank you for asking!" }],
+      "rejected": [{ "role": "assistant", "content": "I'm doing well, thanks for asking." }]
+    }
+  ]
+}

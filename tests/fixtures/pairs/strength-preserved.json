@@ -1,0 +1,30 @@
+{
+  "description": "Strength field preserved in all.decisions.jsonl",
+  "records": [
+    {
+      "prompt": "What is 2+2?",
+      "candidates": ["4", "5"]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left",
+        "strength": 3
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "prompt": "What is 2+2?",
+      "chosen": "4",
+      "rejected": "5"
+    }
+  ],
+  "expectedEditPairs": [],
+  "note": "The strength field (3 = significantly better) should be preserved in the full decisions export"
+}

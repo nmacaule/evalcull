@@ -1,0 +1,28 @@
+{
+  "description": "One compare decision → one pair",
+  "records": [
+    {
+      "prompt": "What is 2+2?",
+      "candidates": ["4", "5"]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left"
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "prompt": "What is 2+2?",
+      "chosen": "4",
+      "rejected": "5"
+    }
+  ],
+  "expectedEditPairs": []
+}
