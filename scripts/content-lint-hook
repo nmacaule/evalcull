@@ -67,6 +67,14 @@ case "$mode" in
   post-write)
     f="$(json_get .tool_input.file_path)"
     [ -z "$f" ] && exit 0
+    # A file outside every git repository can never be committed: skip it.
+    # A file inside one that git ignores (including .git/info/exclude entries): skip it too.
+    d="$(dirname "$f")"
+    if git -C "$d" rev-parse --show-toplevel >/dev/null 2>&1; then
+      if git -C "$d" check-ignore -q -- "$f" 2>/dev/null; then exit 0; fi
+    else
+      exit 0
+    fi
     if ! "$lint" files "$f" >/dev/null 2>&1; then
       echo "blocked: $f contains a term the content lint rejects; rewrite it without that term" >&2; exit 2
     fi
