@@ -1,4 +1,5 @@
 # build output and local tooling only; nothing here names any tool used to build the project
+.DS_Store
 node_modules/
 dist/
 python/src/evalcull/dist/
