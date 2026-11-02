@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "fingerprint": "unsafe-test",
+  "sourceName": "unsafe.jsonl",
+  "sourceKind": "jsonl",
+  "format": {
+    "kind": "preference",
+    "chosenPath": "chosen",
+    "rejectedPath": "rejected"
+  },
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "right",
+        "strength": 2
+      },
+      "score": 85,
+      "updatedAt": 1730505600000
+    },
+    "0:0": {
+      "status": "kept",
+      "edits": {
+        "bignum": 9007199254740993
+      },
+      "updatedAt": 1730505601000
+    }
+  },
+  "cursor": 0,
+  "history": [
+    {
+      "type": "score",
+      "ref": "0",
+      "before": 50,
+      "after": 85
+    },
+    {
+      "type": "compare",
+      "ref": "0",
+      "before": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left",
+        "strength": 1
+      },
+      "after": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "right",
+        "strength": 2
+      }
+    },
+    {
+      "type": "edit",
+      "ref": "0:0",
+      "path": "bignum",
+      "after": 9007199254740993
+    }
+  ],
+  "savedAt": 1730505610000
+}

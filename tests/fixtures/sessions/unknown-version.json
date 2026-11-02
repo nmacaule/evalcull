@@ -1,0 +1,13 @@
+{
+  "version": 99,
+  "fingerprint": "abc123",
+  "sourceName": "test.jsonl",
+  "sourceKind": "jsonl",
+  "format": {
+    "kind": "unknown"
+  },
+  "decisions": {},
+  "cursor": 0,
+  "history": [],
+  "savedAt": 1730505600000
+}
