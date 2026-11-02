@@ -1,0 +1,5 @@
+# Prevent line-ending normalisation on fixtures and JSONL files.
+# CI runs on windows-latest; if git converts on checkout, crlf.jsonl and lf.jsonl
+# become identical and no-trailing-newline.jsonl grows a byte.
+tests/fixtures/** -text
+*.jsonl -text

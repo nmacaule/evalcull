@@ -1,0 +1,15 @@
+{
+  "description": "Keep/Reject only → zero pairs",
+  "records": [
+    { "prompt": "Q1", "response": "A1" },
+    { "prompt": "Q2", "response": "A2" },
+    { "prompt": "Q3", "response": "A3" }
+  ],
+  "decisions": {
+    "0": { "status": "kept", "updatedAt": 1730505600000 },
+    "1": { "status": "rejected", "updatedAt": 1730505600000 },
+    "2": { "status": "skipped", "updatedAt": 1730505600000 }
+  },
+  "expectedPairs": [],
+  "expectedEditPairs": []
+}
