@@ -1,0 +1,14 @@
+# build output and local tooling only; nothing here names any tool used to build the project
+node_modules/
+dist/
+python/src/evalcull/dist/
+python/dist/
+python/build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.venv/
+coverage/
+playwright-report/
+test-results/
+*.tgz

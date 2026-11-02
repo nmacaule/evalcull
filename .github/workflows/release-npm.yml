@@ -1,0 +1,50 @@
+name: release-npm
+
+# Publishes the npm package through trusted publishing (OIDC): no token anywhere.
+# Runs on a version tag, or by hand from the Actions tab (workflow_dispatch).
+# The job uses the GitHub environment "npm"; give that environment a required
+# reviewer so every publish waits for a human approval.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    env:
+      CONTENT_LINT_TERMS: ${{ secrets.CONTENT_LINT_TERMS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: npm 11.5.1 or newer is required for trusted publishing
+        run: npm install -g npm@latest && npm --version
+
+      - name: Install (when a lockfile exists)
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci --ignore-scripts
+
+      - name: Build (when a build script exists)
+        run: npm run build --if-present
+
+      - name: Content lint on the exact tarball that will be published
+        run: |
+          test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
+          chmod +x scripts/content-lint
+          tgz="$(npm pack --silent)"
+          scripts/content-lint archive "$tgz"
+          rm -f "$tgz"
+
+      - name: Publish
+        run: npm publish --access public

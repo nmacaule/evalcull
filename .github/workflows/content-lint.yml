@@ -1,0 +1,72 @@
+name: content-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"   # weekly full-history scan, Monday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      CONTENT_LINT_TERMS: ${{ secrets.CONTENT_LINT_TERMS }}
+      CONTENT_LINT_ALLOWED_EMAILS: ${{ secrets.CONTENT_LINT_ALLOWED_EMAILS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail closed when the lists are not configured
+        run: |
+          test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
+          test -n "$CONTENT_LINT_ALLOWED_EMAILS" || { echo "CONTENT_LINT_ALLOWED_EMAILS secret is not set"; exit 1; }
+          chmod +x scripts/content-lint
+
+      - name: Tracked paths and content
+        run: scripts/content-lint tracked
+
+      - name: Commit range — messages, trailers, author and committer identities
+        if: github.event_name == 'pull_request'
+        run: scripts/content-lint range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
+      - name: Pull request title and body
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | scripts/content-lint stdin
+
+      - name: npm tarball (when the package exists)
+        if: hashFiles('package.json') != ''
+        run: |
+          if command -v node >/dev/null && grep -q '"bin"' package.json; then
+            npm ci
+            npm run build --if-present
+            tgz="$(npm pack --silent)"
+            scripts/content-lint archive "$tgz"
+          fi
+
+      - name: Python wheel (when the package exists)
+        if: hashFiles('python/pyproject.toml') != ''
+        run: |
+          pip install --quiet build
+          python -m build --wheel --outdir /tmp/wheel python
+          for w in /tmp/wheel/*.whl; do scripts/content-lint archive "$w"; done
+
+      - name: Pages and Space build outputs (when present)
+        if: hashFiles('package.json') != ''
+        run: |
+          if npm run --silent build:single 2>/dev/null; then
+            find dist -type f -print0 | xargs -0 scripts/content-lint files
+          fi
+
+      - name: Full history (weekly and on demand)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: scripts/content-lint history

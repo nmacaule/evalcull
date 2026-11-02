@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# content-lint: fails when any configured term appears in text, file paths,
+# commit messages, trailers, build artifacts or git history.
+#
+# The term list is never stored in the repository. It is read from, in order:
+#   1. $CONTENT_LINT_TERMS            (newline- or comma-separated; CI sets it from a secret)
+#   2. <git common dir>/info/content-lint-terms   (local; .git/info is never pushed)
+# With no list the tool fails closed (exit 2).
+#
+# Author/committer identities for `range` and `history` come from
+#   $CONTENT_LINT_ALLOWED_EMAILS or <git common dir>/info/content-lint-allowed-emails
+#
+# Modes
+#   content-lint tracked                 scan every tracked path name and file content
+#   content-lint files <path...>         scan the given files (content) and their names
+#   content-lint stdin                   scan standard input
+#   content-lint message <file>          scan one commit message file; reject any trailer
+#   content-lint range <base> <head>     messages, trailers and identities of base..head
+#   content-lint history                 the same over every commit in the repository
+#   content-lint archive <file>          scan the listing and contents of a .tgz/.zip/.whl
+#
+# Output never echoes the matched text; only locations are printed.
+
+set -euo pipefail
+
+mode="${1:-}"; shift || true
+
+die()  { echo "content-lint: $*" >&2; exit 2; }
+note() { echo "content-lint: $*" >&2; }
+
+common_dir() { git rev-parse --git-common-dir 2>/dev/null || true; }
+
+terms_file=""
+load_terms() {
+  terms_file="$(mktemp)"
+  if [ -n "${CONTENT_LINT_TERMS:-}" ]; then
+    printf '%s\n' "$CONTENT_LINT_TERMS" | tr ',' '\n' > "$terms_file"
+  else
+    local cd; cd="$(common_dir)"
+    if [ -n "$cd" ] && [ -f "$cd/info/content-lint-terms" ]; then
+      cat "$cd/info/content-lint-terms" > "$terms_file"
+    fi
+  fi
+  # drop blanks and comments, trim whitespace
+  sed -i.bak -e 's/^[[:space:]]*//;s/[[:space:]]*$//' -e '/^$/d' -e '/^#/d' "$terms_file" && rm -f "$terms_file.bak"
+  [ -s "$terms_file" ] || die "no term list configured (CONTENT_LINT_TERMS or .git/info/content-lint-terms); failing closed"
+}
+trap '[ -n "${terms_file:-}" ] && rm -f "$terms_file"' EXIT
+
+allowed_file=""
+load_allowed() {
+  allowed_file="$(mktemp)"
+  if [ -n "${CONTENT_LINT_ALLOWED_EMAILS:-}" ]; then
+    printf '%s\n' "$CONTENT_LINT_ALLOWED_EMAILS" | tr ',' '\n' > "$allowed_file"
+  else
+    local cd; cd="$(common_dir)"
+    [ -n "$cd" ] && [ -f "$cd/info/content-lint-allowed-emails" ] && cat "$cd/info/content-lint-allowed-emails" > "$allowed_file"
+  fi
+  sed -i.bak -e 's/^[[:space:]]*//;s/[[:space:]]*$//' -e '/^$/d' -e '/^#/d' "$allowed_file" && rm -f "$allowed_file.bak"
+  [ -s "$allowed_file" ] || die "no allowed-email list configured (CONTENT_LINT_ALLOWED_EMAILS or .git/info/content-lint-allowed-emails); failing closed"
+}
+
+hits=0
+
+# scan_text <label> : reads stdin, prints only line numbers of hits
+scan_text() {
+  local label="$1" lines
+  lines="$(grep -n -i -F -f "$terms_file" - 2>/dev/null | cut -d: -f1 | paste -sd, - || true)"
+  if [ -n "$lines" ]; then
+    echo "HIT  $label  (lines $lines)"
+    hits=$((hits + 1))
+  fi
+}
+
+# scan_name <path> : the path itself
+scan_name() {
+  local p="$1"
+  if printf '%s\n' "$p" | grep -q -i -F -f "$terms_file"; then
+    echo "HIT  path name: $p"
+    hits=$((hits + 1))
+  fi
+}
+
+# scan_file <path> : name + content (text files only)
+scan_file() {
+  local f="$1"
+  scan_name "$f"
+  [ -f "$f" ] || return 0
+  if grep -Iq . "$f" 2>/dev/null; then
+    scan_text "$f" < "$f"
+  fi
+}
+
+# trailer check on a commit message body from stdin
+check_trailers() {
+  local label="$1" bad
+  bad="$(grep -n -E -i '^(co-?authored-by|signed-off-by|generated-with|[a-z-]+-session):' - || true)"
+  if [ -n "$bad" ]; then
+    echo "HIT  trailer in $label (line $(printf '%s' "$bad" | cut -d: -f1 | paste -sd, -))"
+    hits=$((hits + 1))
+  fi
+}
+
+check_identities() { # <base> <head> or --all
+  local sel="$1" id
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! grep -q -i -x -F "$id" "$allowed_file"; then
+      echo "HIT  commit identity not on the allowlist: $id"
+      hits=$((hits + 1))
+    fi
+  done < <(if [ "$sel" = "--all" ]; then git log --all --format='%ae%n%ce'; else git log --format='%ae%n%ce' "$sel"; fi | sort -u)
+}
+
+check_messages() { # git log selector
+  local sel="$1" sha
+  while IFS= read -r sha; do
+    git log -1 --format='%B' "$sha" | scan_text "commit $sha message"
+    git log -1 --format='%B' "$sha" | check_trailers "commit $sha"
+    git log -1 --format='%an%n%cn' "$sha" | scan_text "commit $sha identity names"
+  done < <(if [ "$sel" = "--all" ]; then git rev-list --all; else git rev-list "$sel"; fi)
+}
+
+case "$mode" in
+  tracked)
+    load_terms
+    while IFS= read -r -d '' f; do scan_file "$f"; done < <(git ls-files -z)
+    ;;
+  files)
+    load_terms
+    for f in "$@"; do scan_file "$f"; done
+    ;;
+  stdin)
+    load_terms
+    scan_text "stdin"
+    ;;
+  message)
+    load_terms
+    [ -f "${1:-}" ] || die "message: file required"
+    scan_text "commit message" < "$1"
+    check_trailers "commit message" < "$1"
+    ;;
+  range)
+    load_terms; load_allowed
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || die "range: base and head required"
+    check_messages "$1..$2"
+    check_identities "$1..$2"
+    # content of every file changed in the range, at head
+    while IFS= read -r -d '' f; do [ -f "$f" ] && scan_file "$f"; done < <(git diff --name-only -z "$1" "$2")
+    ;;
+  history)
+    load_terms; load_allowed
+    check_messages --all
+    check_identities --all
+    # every blob ever committed, by object id, content only
+    while IFS= read -r sha; do
+      git grep -q -i -F -f "$terms_file" "$sha" -- 2>/dev/null && { echo "HIT  content in commit $sha"; hits=$((hits + 1)); }
+    done < <(git rev-list --all)
+    ;;
+  archive)
+    load_terms
+    [ -f "${1:-}" ] || die "archive: file required"
+    tmp="$(mktemp -d)"
+    case "$1" in
+      *.tgz|*.tar.gz) tar -xzf "$1" -C "$tmp" ;;
+      *.zip|*.whl)    unzip -q "$1" -d "$tmp" ;;
+      *) die "archive: unsupported type" ;;
+    esac
+    while IFS= read -r -d '' f; do scan_file "$f"; done < <(cd "$tmp" && find . -type f -print0)
+    rm -rf "$tmp"
+    ;;
+  *)
+    die "usage: content-lint {tracked|files <path...>|stdin|message <file>|range <base> <head>|history|archive <file>}"
+    ;;
+esac
+
+if [ "$hits" -gt 0 ]; then
+  note "$hits hit(s); refusing"
+  exit 1
+fi
+note "clean ($mode)"

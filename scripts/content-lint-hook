@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# content-lint-hook: adapter between the coding agent's lifecycle hooks and content-lint.
+# The agent passes a JSON event on stdin. Exit 2 blocks the action and returns stderr to the agent.
+#
+#   content-lint-hook pre-bash    (PreToolUse, matcher Bash)
+#       blocks: git push to main, npm publish, twine upload, uv publish,
+#               any git commit / gh pr|issue|release create whose text has a hit or a trailer
+#   content-lint-hook post-write  (PostToolUse, matcher Edit|Write)
+#       scans the written file; blocks on a hit
+#
+# Uses jq when present, python3 otherwise.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+lint="$here/content-lint"
+mode="${1:-}"
+input="$(cat)"
+
+json_get() { # <jq path like .tool_input.command>
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$input" | jq -r "$1 // empty"
+  else
+    printf '%s' "$input" | python3 -c '
+import json, sys
+path = sys.argv[1].strip(".").split(".")
+try:
+    v = json.load(sys.stdin)
+    for k in path:
+        v = v.get(k) if isinstance(v, dict) else None
+    print(v if isinstance(v, str) else "")
+except Exception:
+    print("")' "$1"
+  fi
+}
+
+case "$mode" in
+  pre-bash)
+    cmd="$(json_get .tool_input.command)"
+    [ -z "$cmd" ] && exit 0
+    # releases happen only in CI
+    if printf '%s' "$cmd" | grep -q -E '(^|[;&| ])(npm publish|twine upload|uv publish)'; then
+      echo "blocked: releases go through CI, never from a session" >&2; exit 2
+    fi
+    if printf '%s' "$cmd" | grep -q -E 'git push[^;&|]*\bmain\b'; then
+      echo "blocked: do not push to main from a session; open a pull request" >&2; exit 2
+    fi
+    # commits, PRs, issues, releases: scan the command text and refuse trailers
+    if printf '%s' "$cmd" | grep -q -E '(git commit|gh pr create|gh issue create|gh release create|gh pr edit|gh issue edit)'; then
+      if ! printf '%s\n' "$cmd" | "$lint" stdin >/dev/null 2>&1; then
+        echo "blocked: the command text contains a term the content lint rejects" >&2; exit 2
+      fi
+      if printf '%s' "$cmd" | grep -q -i -E '(co-?authored-by|signed-off-by|generated-with|[a-z-]+-session):'; then
+        echo "blocked: no commit or pull-request trailers of any kind" >&2; exit 2
+      fi
+    fi
+    # gh must act as the expected account (set EXPECTED_GH_ACCOUNT in the agent's settings env)
+    if printf '%s' "$cmd" | grep -q -E '(^|[;&| ])gh ' && command -v gh >/dev/null 2>&1; then
+      want="${EXPECTED_GH_ACCOUNT:-}"
+      if [ -n "$want" ] && ! printf '%s' "$cmd" | grep -q -E '(^|[;&| ])gh auth '; then
+        have="$(gh api user --jq .login 2>/dev/null || true)"
+        if [ "$have" != "$want" ]; then
+          echo "blocked: gh is logged in as '${have:-nobody}', expected '$want'; run: gh auth switch --user $want" >&2; exit 2
+        fi
+      fi
+    fi
+    exit 0
+    ;;
+  post-write)
+    f="$(json_get .tool_input.file_path)"
+    [ -z "$f" ] && exit 0
+    if ! "$lint" files "$f" >/dev/null 2>&1; then
+      echo "blocked: $f contains a term the content lint rejects; rewrite it without that term" >&2; exit 2
+    fi
+    exit 0
+    ;;
+  *)
+    echo "usage: content-lint-hook {pre-bash|post-write}" >&2; exit 2
+    ;;
+esac
