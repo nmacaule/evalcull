@@ -2,6 +2,9 @@
 /**
  * Create golden JSONL fixtures with explicit bytes.
  * This ensures line endings are exactly as specified, not editor-dependent.
+ *
+ * THIS SCRIPT IS THE SOURCE OF TRUTH FOR FIXTURE BYTES.
+ * Re-run this script rather than hand-editing any .jsonl fixture.
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs';

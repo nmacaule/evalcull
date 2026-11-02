@@ -52,3 +52,8 @@ A reader is done only when it has:
 
 1. A fixture in `tests/fixtures/<format>/`
 2. A test case in `tests/readers.test.ts` asserting detected shape, record count, and export promise
+
+## Fixture source of truth
+
+`scripts/create-fixtures.mjs` is the source of truth for JSONL fixture bytes.
+Re-run the script rather than hand-editing any `.jsonl` fixture.
