@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "fingerprint": "abc123",
+  "sourceName": "test.jsonl",
+  "sourceKind": "jsonl",
+  "format": {
+    "kind": "preference",
+    "chosenPath": "chosen",
+    "rejectedPath": "rejected"
+  },
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "updatedAt": 1730505600000,
+      "compare": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left"
+      }
+    },
+    "1": {
+      "status": "kept",
+      "updatedAt": 1730505601000
+    },
+    "1:0": {
+      "status": "kept",
+      "updatedAt": 1730505602000,
+      "edits": {
+        "content": "edited value"
+      }
+    }
+  },
+  "cursor": 1,
+  "history": [
+    {
+      "type": "compare",
+      "ref": "0",
+      "after": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left"
+      }
+    },
+    {
+      "type": "status",
+      "ref": "1",
+      "before": "unreviewed",
+      "after": "kept"
+    },
+    {
+      "type": "edit",
+      "ref": "1:0",
+      "path": "content",
+      "after": "edited value"
+    }
+  ],
+  "savedAt": 1730505610000
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "fingerprint": "different-fingerprint",
+  "sourceName": "test.jsonl",
+  "sourceKind": "jsonl",
+  "format": {
+    "kind": "unknown"
+  },
+  "decisions": {
+    "0": {
+      "status": "kept",
+      "updatedAt": 1730505600000
+    }
+  },
+  "cursor": 0,
+  "history": [
+    {
+      "type": "status",
+      "ref": "0",
+      "before": "unreviewed",
+      "after": "kept"
+    }
+  ],
+  "savedAt": 1730505610000
+}
