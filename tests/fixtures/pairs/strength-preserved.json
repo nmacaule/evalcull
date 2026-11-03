@@ -1,5 +1,10 @@
 {
   "description": "Strength field preserved in all.decisions.jsonl",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
   "records": [
     {
       "prompt": "What is 2+2?",

@@ -26,6 +26,7 @@ export interface FileIndex {
   hasBom: boolean;
   groups: Uint32Array;
   groupCount: number;
+  unparseable: Uint32Array; // ascending line indices that fail to parse; added 2 Nov 2026
 }
 
 export type RecordFormat =

@@ -53,10 +53,11 @@ export async function readJsonl(
     worker.postMessage(message);
   });
 
-  // Request grouping (stub for now: each line is its own group)
+  // Request grouping + unparseable detection
   const groupResult = await new Promise<{
     groups: Uint32Array;
     groupCount: number;
+    unparseable: Uint32Array;
   }>((resolve, reject) => {
     worker.onmessage = (e: MessageEvent<IndexerResponse>) => {
       const msg = e.data;
@@ -72,11 +73,10 @@ export async function readJsonl(
       blob: file,
       starts: indexResult.starts,
       ends: indexResult.ends,
+      hasBom: indexResult.hasBom,
       promptPath: '', // Shape detection not yet available (WP 5)
     };
     // Don't transfer starts/ends - we need them for the FileIndex.
-    // Once grouping is implemented in WP 5, consider having the worker
-    // return them or keeping a copy before transfer.
     worker.postMessage(message);
   });
 
@@ -89,6 +89,7 @@ export async function readJsonl(
     hasBom: indexResult.hasBom,
     groups: groupResult.groups,
     groupCount: groupResult.groupCount,
+    unparseable: groupResult.unparseable,
   };
 
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });

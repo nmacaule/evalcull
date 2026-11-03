@@ -1,0 +1,33 @@
+{
+  "description": "Preference format without promptPath → implicit-prompt TRL rows {chosen, rejected}",
+  "format": {
+    "kind": "preference",
+    "chosenPath": "chosen",
+    "rejectedPath": "rejected"
+  },
+  "records": [
+    {
+      "chosen": "The answer is 4.",
+      "rejected": "The answer is 5."
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "left"
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "chosen": "The answer is 4.",
+      "rejected": "The answer is 5."
+    }
+  ],
+  "expectedEditPairs": [],
+  "expectedImplicitPromptCount": 1
+}

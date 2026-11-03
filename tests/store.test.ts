@@ -89,6 +89,7 @@ function createMockSource(lineCount: number): RecordSource {
     hasBom: false,
     groups,
     groupCount: lineCount,
+    unparseable: new Uint32Array(0),
   };
 
   return {
@@ -1116,7 +1117,7 @@ describe('counts', () => {
     expect(counts.skipped).toBe(1);
     expect(counts.edited).toBe(1);
     expect(counts.unreviewed).toBe(7); // 10 - 3 reviewed (kept/rejected/skipped). Edit with status='unreviewed' is still unreviewed.
-    expect(counts.unparseable).toBeNull();
+    expect(counts.unparseable).toBe(0);
   });
 
   it('counts compare decisions', async () => {

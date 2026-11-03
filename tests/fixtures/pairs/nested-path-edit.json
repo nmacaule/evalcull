@@ -1,0 +1,44 @@
+{
+  "description": "Edit with nested format.path (data.messages) works correctly",
+  "format": {
+    "kind": "messages",
+    "path": "data.messages",
+    "roleKey": "role",
+    "contentKey": "content",
+    "roles": {
+      "user": ["user"],
+      "assistant": ["assistant"],
+      "system": ["system"]
+    }
+  },
+  "records": [
+    {
+      "data": {
+        "messages": [
+          { "role": "user", "content": "Hello" },
+          { "role": "assistant", "content": "Hi there!" }
+        ]
+      }
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "kept",
+      "edits": {
+        "data.messages[1].content": "Hello! How can I help?"
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [],
+  "expectedEditPairs": [
+    {
+      "prompt": [
+        { "role": "user", "content": "Hello" }
+      ],
+      "chosen": [{ "role": "assistant", "content": "Hello! How can I help?" }],
+      "rejected": [{ "role": "assistant", "content": "Hi there!" }]
+    }
+  ],
+  "note": "Tests that nested format.path like data.messages is matched correctly"
+}

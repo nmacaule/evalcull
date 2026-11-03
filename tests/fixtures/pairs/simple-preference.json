@@ -1,5 +1,10 @@
 {
   "description": "One compare decision → one pair",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
   "records": [
     {
       "prompt": "What is 2+2?",

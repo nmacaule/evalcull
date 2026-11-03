@@ -1,15 +1,32 @@
-import { describe, it, expect } from 'vitest';
+// @vitest-environment node
+import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { Blob as NodeBlob } from 'node:buffer';
+import 'fake-indexeddb/auto';
+import { IDBFactory } from 'fake-indexeddb';
 import { indexBlob } from '../src/lib/indexer';
+import { detectUnparseable } from '../src/lib/detectUnparseable';
+import { exportLines } from '../src/export/exportLines';
+import { losslessParse } from '../src/lib/lossless';
+import { useReviewStore } from '../src/store/useReviewStore';
+import { configureStorage, configureSidecar } from '../src/store/persistence';
+import type { FileIndex, RecordSource, CandidateRef, Decision } from '../src/types';
 
-// Node's Blob has .stream() but jsdom's doesn't.
-// Cast to DOM Blob for type compatibility.
+/**
+ * Create a Blob from bytes. Uses native Blob in node environment.
+ */
 function createBlob(data: ArrayLike<number>): Blob {
-  // Copy into a fresh Uint8Array to avoid Buffer/ArrayBufferLike type issues
   const bytes = Uint8Array.from(data);
-  return new NodeBlob([bytes]) as unknown as Blob;
+  return new Blob([bytes]);
+}
+
+/**
+ * Convert Blob to Buffer for comparison.
+ */
+async function blobToBuffer(blob: Blob): Promise<Buffer> {
+  const arrayBuffer = await blob.arrayBuffer();
+  return Buffer.from(arrayBuffer);
 }
 
 /**
@@ -70,6 +87,31 @@ function getFixtureNames(): string[] {
   return readdirSync(fixturesDir)
     .filter((f) => f.endsWith('.jsonl'))
     .map((f) => f.replace('.jsonl', ''));
+}
+
+/**
+ * Create a mock RecordSource from fixture bytes and index.
+ */
+function createJsonlSource(bytes: Buffer, idx: FileIndex): Extract<RecordSource, { kind: 'jsonl' }> {
+  const decoder = new TextDecoder('utf-8');
+
+  return {
+    kind: 'jsonl',
+    index: idx,
+    async readText(i: number): Promise<string> {
+      const start = idx.starts[i];
+      const end = idx.ends[i];
+      const lineBytes = bytes.subarray(start, end);
+      return decoder.decode(lineBytes);
+    },
+    async readRaw(i: number): Promise<Blob> {
+      const start = idx.starts[i];
+      const eol = idx.eols[i];
+      const end = idx.ends[i] + eol;
+      const slice = Uint8Array.from(bytes.subarray(start, end));
+      return new Blob([slice]);
+    },
+  };
 }
 
 describe('index triples (WP 2: indexer worker)', () => {
@@ -201,18 +243,594 @@ describe('index triples (WP 2: indexer worker)', () => {
   });
 });
 
-describe.skip('SHA-256 round-trip (WP 4: exporter)', () => {
-  // Ingest → export with no decisions → SHA-256 identical.
-  // A concatenation identity alone passes for any partition of the bytes;
-  // the per-line oracle above catches off-by-one errors.
+describe('SHA-256 round-trip (WP 4: exporter)', () => {
+  const fixtures = getFixtureNames();
+
+  it.each(fixtures)('%s: export with no decisions is SHA-256 identical', async (name) => {
+    const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    // Create FileIndex with empty unparseable (we're testing export, not unparseable detection)
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    // Export all lines with no decisions, bom: 'keep'
+    const exportedBlob = await exportLines(
+      source,
+      decisions,
+      () => true, // include all
+      { bom: 'keep' }
+    );
+
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // SHA-256 comparison (oracle: Node crypto, not exporter code)
+    const inputHash = createHash('sha256').update(bytes).digest('hex');
+    const outputHash = createHash('sha256').update(exportedBuffer).digest('hex');
+
+    expect(outputHash).toBe(inputHash);
+  });
 });
 
-describe.skip('edited line isolation (WP 4: exporter)', () => {
-  // Edit one candidate ⇒ only that line differs.
-  // Edit a line containing 9007199254740993, 1.0, 1e3 and -0 ⇒ those tokens are byte-identical in the output.
-  // This tests that lossless-json preserves number formatting on edited lines.
+describe('edited line isolation (WP 4: exporter)', () => {
+  it('edit one line: only that line differs', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit line 1 (second line)
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('1', {
+      status: 'kept',
+      edits: { 'id': 999 },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Compare line by line
+    const inputLines = bytes.toString('utf-8').split('\n');
+    const outputLines = exportedBuffer.toString('utf-8').split('\n');
+
+    expect(outputLines.length).toBe(inputLines.length);
+
+    for (let i = 0; i < inputLines.length; i++) {
+      if (i === 1) {
+        // Edited line should differ
+        expect(outputLines[i]).not.toBe(inputLines[i]);
+        expect(outputLines[i]).toContain('999');
+      } else {
+        // Other lines should be identical
+        expect(outputLines[i]).toBe(inputLines[i]);
+      }
+    }
+  });
+
+  it('big-int and number formats are byte-identical on edited lines', async () => {
+    // Test with number-formats.jsonl which has 1.0, 1e3, -0
+    const bytes = readFileSync(join(fixturesDir, 'number-formats.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit a field that doesn't affect numbers
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('0', {
+      status: 'kept',
+      edits: { 'name': 'edited' },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+    const outputLine = exportedBuffer.toString('utf-8').split('\n')[0];
+
+    // Verify number tokens are preserved
+    expect(outputLine).toContain('1.0');
+    expect(outputLine).toContain('1e3');
+    expect(outputLine).toContain('-0');
+  });
+
+  it('big integer 9007199254740993 is preserved on edited lines', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'big-int.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit a different field
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('0', {
+      status: 'kept',
+      edits: { 'name': 'edited' },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+    const outputLine = exportedBuffer.toString('utf-8').split('\n')[0];
+
+    // Verify big integer is preserved (not truncated to 9007199254740992)
+    expect(outputLine).toContain('9007199254740993');
+    expect(outputLine).not.toContain('9007199254740992');
+  });
 });
 
-describe.skip('BOM options (WP 4: exporter)', () => {
-  // BOM fixture: keep ⇒ identical; strip ⇒ identical minus EF BB BF; add on a BOM-less fixture ⇒ EF BB BF + identical.
+describe('BOM options (WP 4: exporter)', () => {
+  it('keep: BOM file exports identical', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    expect(exportedBuffer.equals(bytes)).toBe(true);
+  });
+
+  it('strip: BOM file exports without BOM', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'strip' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should not start with BOM
+    expect(exportedBuffer[0]).not.toBe(0xef);
+
+    // Should equal input minus first 3 bytes
+    expect(exportedBuffer.equals(bytes.subarray(3))).toBe(true);
+  });
+
+  it('add: non-BOM file exports with BOM prepended', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'add' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should start with BOM
+    expect(exportedBuffer[0]).toBe(0xef);
+    expect(exportedBuffer[1]).toBe(0xbb);
+    expect(exportedBuffer[2]).toBe(0xbf);
+
+    // Rest should equal input
+    expect(exportedBuffer.subarray(3).equals(bytes)).toBe(true);
+  });
+
+  it('edited line 0 with BOM: keep preserves BOM', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit line 0
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('0', {
+      status: 'kept',
+      edits: { 'id': 999 },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should start with BOM (file-level rule)
+    expect(exportedBuffer[0]).toBe(0xef);
+    expect(exportedBuffer[1]).toBe(0xbb);
+    expect(exportedBuffer[2]).toBe(0xbf);
+  });
+
+  it('edited line 0 with BOM: strip removes BOM', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit line 0
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('0', {
+      status: 'kept',
+      edits: { 'id': 999 },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'strip' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should not start with BOM
+    expect(exportedBuffer[0]).not.toBe(0xef);
+  });
+
+  it('edited line 0 with BOM: add emits exactly one BOM', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Edit line 0
+    const decisions = new Map<CandidateRef, Decision>();
+    decisions.set('0', {
+      status: 'kept',
+      edits: { 'id': 999 },
+      updatedAt: Date.now(),
+    });
+
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'add' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should start with exactly one BOM
+    expect(exportedBuffer[0]).toBe(0xef);
+    expect(exportedBuffer[1]).toBe(0xbb);
+    expect(exportedBuffer[2]).toBe(0xbf);
+
+    // Count BOMs in the output (should be exactly 1)
+    let bomCount = 0;
+    for (let i = 0; i <= exportedBuffer.length - 3; i++) {
+      if (
+        exportedBuffer[i] === 0xef &&
+        exportedBuffer[i + 1] === 0xbb &&
+        exportedBuffer[i + 2] === 0xbf
+      ) {
+        bomCount++;
+      }
+    }
+    expect(bomCount).toBe(1);
+  });
+});
+
+describe('edit then undo exports byte-identical (WP 4)', () => {
+  beforeEach(() => {
+    // Fresh IDB per test
+    configureStorage({ indexedDB: new IDBFactory() });
+    configureSidecar(null);
+
+    // Reset store to initial state
+    useReviewStore.setState({
+      source: null,
+      sourceName: '',
+      fingerprint: '',
+      format: { kind: 'unknown' },
+      decisions: new Map(),
+      mode: 'single',
+      cursor: 0,
+      focus: 0,
+      past: [],
+      future: [],
+      filter: 'all',
+      storageState: { kind: 'idle' },
+      lastSavedAt: null,
+      session: { kind: 'fresh' },
+      newerLocalCopy: null,
+      groupsStale: false,
+      _dirty: false,
+      _lastSerializedText: null,
+    });
+  });
+
+  it('edit and undo produces same export as no edit', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test-fingerprint',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: new Uint32Array(0),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+
+    // Load source into store
+    await useReviewStore.getState().load(source, {
+      sourceName: 'lf.jsonl',
+      fingerprint: 'test-fingerprint',
+    });
+
+    // Edit line 0
+    useReviewStore.getState().edit('0', 'id', 999);
+
+    // Verify edit was applied
+    const afterEdit = useReviewStore.getState().decisions.get('0');
+    expect(afterEdit?.edits).toEqual({ id: 999 });
+
+    // Undo the edit
+    useReviewStore.getState().undo();
+
+    // Verify edit was reverted (decision should be gone or have no edits)
+    const afterUndo = useReviewStore.getState().decisions.get('0');
+    const hasEdits = afterUndo?.edits && Object.keys(afterUndo.edits).length > 0;
+    expect(hasEdits).toBeFalsy();
+
+    // Export with store's decisions
+    const decisions = useReviewStore.getState().decisions;
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should be identical to input
+    const inputHash = createHash('sha256').update(bytes).digest('hex');
+    const outputHash = createHash('sha256').update(exportedBuffer).digest('hex');
+    expect(outputHash).toBe(inputHash);
+  });
+});
+
+describe('unparseable detection (WP 4)', () => {
+  const fixtures = getFixtureNames();
+
+  it.each(fixtures)('%s: detectUnparseable matches fixture metadata', async (name) => {
+    const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
+    const meta: FixtureMeta = JSON.parse(
+      readFileSync(join(fixturesDir, `${name}.meta.json`), 'utf-8')
+    );
+
+    // Find expected unparseable indices from metadata
+    const expectedUnparseable: number[] = [];
+    for (let i = 0; i < meta.parseable.length; i++) {
+      if (!meta.parseable[i]) {
+        expectedUnparseable.push(i);
+      }
+    }
+
+    // Run detectUnparseable from src/lib (same code as worker)
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+    const actualUnparseable = await detectUnparseable(
+      blob,
+      result.starts,
+      result.ends,
+      result.hasBom
+    );
+
+    expect(Array.from(actualUnparseable)).toEqual(expectedUnparseable);
+  });
+
+  it('record() and JSON.parse agree on validity for all fixtures', async () => {
+    for (const name of fixtures) {
+      const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
+      const blob = createBlob(bytes);
+      const result = await indexBlob(blob);
+      const decoder = new TextDecoder('utf-8');
+
+      for (let i = 0; i < result.lineCount; i++) {
+        let start = result.starts[i];
+        const end = result.ends[i];
+
+        // For line 0 with BOM, skip BOM bytes
+        if (i === 0 && result.hasBom && start === 0) {
+          start = 3;
+        }
+
+        const lineBytes = bytes.subarray(start, end);
+        const text = decoder.decode(lineBytes);
+
+        let jsonParseOk = true;
+        try {
+          JSON.parse(text);
+        } catch {
+          jsonParseOk = false;
+        }
+
+        let losslessParseOk = true;
+        try {
+          losslessParse(text);
+        } catch {
+          losslessParseOk = false;
+        }
+
+        // JSON.parse and losslessParse should agree on validity
+        expect(jsonParseOk).toBe(losslessParseOk);
+      }
+    }
+  });
+});
+
+describe('excludeUnparseable (WP 4)', () => {
+  it('malformed.jsonl: exclude removes unparseable line', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'malformed.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    // Line 1 is unparseable per meta
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: Uint32Array.from([1]), // line 1 is unparseable
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    // Export excluding unparseable
+    const unparseableSet = new Set([1]);
+    const exportedBlob = await exportLines(
+      source,
+      decisions,
+      (i) => !unparseableSet.has(i),
+      { bom: 'keep' }
+    );
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should only have line 0
+    const outputLines = exportedBuffer.toString('utf-8').split('\n').filter(l => l.length > 0);
+    expect(outputLines.length).toBe(1);
+  });
+
+  it('malformed.jsonl: include passes through unparseable line byte-exact', async () => {
+    const bytes = readFileSync(join(fixturesDir, 'malformed.jsonl'));
+    const blob = createBlob(bytes);
+    const result = await indexBlob(blob);
+
+    const idx: FileIndex = {
+      fingerprint: 'test',
+      lineCount: result.lineCount,
+      starts: result.starts,
+      ends: result.ends,
+      eols: result.eols,
+      hasBom: result.hasBom,
+      groups: new Uint32Array(result.lineCount),
+      groupCount: result.lineCount,
+      unparseable: Uint32Array.from([1]),
+    };
+
+    const source = createJsonlSource(bytes, idx);
+    const decisions = new Map<CandidateRef, Decision>();
+
+    // Export including all
+    const exportedBlob = await exportLines(source, decisions, () => true, { bom: 'keep' });
+    const exportedBuffer = await blobToBuffer(exportedBlob);
+
+    // Should be identical to input
+    expect(exportedBuffer.equals(bytes)).toBe(true);
+  });
 });
