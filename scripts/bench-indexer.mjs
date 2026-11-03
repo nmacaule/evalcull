@@ -155,16 +155,86 @@ const fileBytes = readFileSync(tempFile);
 const blob = new Blob([fileBytes]);
 console.log(`File size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
 
-// Run indexer
-console.log('Running indexer...');
+// Run indexer (first pass)
+console.log('Running first pass (index)...');
 const startIndex = performance.now();
 const result = await indexBlob(blob);
 const indexTime = performance.now() - startIndex;
 
-console.log(`\nResults:`);
 console.log(`  Lines: ${result.lineCount.toLocaleString()}`);
 console.log(`  Has BOM: ${result.hasBom}`);
-console.log(`  Index time: ${indexTime.toFixed(0)} ms`);
+console.log(`  First pass: ${indexTime.toFixed(0)} ms`);
+
+// -----------------------------------------------------------------------------
+// Second pass: decode + JSON.parse each line (WP 4 unparseable detection)
+// Mirrors the logic in src/workers/indexer.worker.ts detectUnparseable()
+// -----------------------------------------------------------------------------
+
+console.log('Running second pass (decode + JSON.parse)...');
+const startSecond = performance.now();
+
+const decoder = new TextDecoder('utf-8');
+const unparseable = [];
+
+// Stream the blob in chunks, same pattern as first pass
+const reader2 = blob.stream().getReader();
+let buffer = new Uint8Array(0);
+let bufferStart = 0;
+let lineIdx = 0;
+
+for (;;) {
+  const { value, done } = await reader2.read();
+
+  if (value) {
+    const newBuffer = new Uint8Array(buffer.length + value.length);
+    newBuffer.set(buffer);
+    newBuffer.set(value, buffer.length);
+    buffer = newBuffer;
+  }
+
+  while (lineIdx < result.lineCount) {
+    const lineStart = result.starts[lineIdx];
+    const lineEnd = result.ends[lineIdx];
+    const localStart = lineStart - bufferStart;
+    const localEnd = lineEnd - bufferStart;
+
+    if (localEnd > buffer.length) break;
+
+    let lineBytes;
+    if (lineIdx === 0 && result.hasBom && localStart === 0) {
+      lineBytes = buffer.subarray(Math.max(localStart, 3), localEnd);
+    } else {
+      lineBytes = buffer.subarray(localStart, localEnd);
+    }
+
+    const text = decoder.decode(lineBytes);
+    try {
+      JSON.parse(text);
+    } catch {
+      unparseable.push(lineIdx);
+    }
+
+    lineIdx++;
+  }
+
+  if (lineIdx > 0 && lineIdx <= result.lineCount) {
+    const lastProcessedEnd = lineIdx < result.lineCount ? result.ends[lineIdx - 1] : result.ends[result.lineCount - 1];
+    const trimPoint = lastProcessedEnd - bufferStart;
+    if (trimPoint > 0 && trimPoint <= buffer.length) {
+      buffer = buffer.subarray(trimPoint);
+      bufferStart = lastProcessedEnd;
+    }
+  }
+
+  if (done) break;
+}
+
+const secondPassTime = performance.now() - startSecond;
+console.log(`  Second pass: ${secondPassTime.toFixed(0)} ms`);
+console.log(`  Unparseable: ${unparseable.length}`);
+
+const totalTime = indexTime + secondPassTime;
+console.log(`  Total: ${totalTime.toFixed(0)} ms`);
 
 // Cleanup
 unlinkSync(tempFile);
@@ -172,4 +242,7 @@ console.log('\nTemp file deleted.');
 
 // Summary for STATUS.md
 console.log(`\n--- For STATUS.md ---`);
-console.log(`100 MB / ${result.lineCount.toLocaleString()} lines indexed in ${indexTime.toFixed(0)} ms`);
+console.log(`100 MB / ${result.lineCount.toLocaleString()} lines:`);
+console.log(`  First pass (index): ${indexTime.toFixed(0)} ms`);
+console.log(`  Second pass (decode + JSON.parse): ${secondPassTime.toFixed(0)} ms (Node figure)`);
+console.log(`  Total: ${totalTime.toFixed(0)} ms`);

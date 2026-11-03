@@ -56,6 +56,7 @@ function createMockSource(lineCount: number): RecordSource {
     hasBom: false,
     groups,
     groupCount: lineCount,
+    unparseable: new Uint32Array(0),
   };
 
   return {

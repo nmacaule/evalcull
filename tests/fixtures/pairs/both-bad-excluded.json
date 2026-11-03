@@ -1,5 +1,10 @@
 {
   "description": "both_bad decision → zero pairs",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
   "records": [
     {
       "prompt": "What is 2+2?",

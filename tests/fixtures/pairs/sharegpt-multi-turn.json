@@ -1,0 +1,48 @@
+{
+  "description": "ShareGPT format: from/value → role/content, gpt → assistant",
+  "format": {
+    "kind": "messages",
+    "path": "conversations",
+    "roleKey": "from",
+    "contentKey": "value",
+    "roles": {
+      "user": ["human"],
+      "assistant": ["gpt"],
+      "system": ["system"]
+    }
+  },
+  "records": [
+    {
+      "conversations": [
+        { "from": "system", "value": "You are a helpful assistant." },
+        { "from": "human", "value": "Hello" },
+        { "from": "gpt", "value": "Hi there!" },
+        { "from": "human", "value": "How are you?" },
+        { "from": "gpt", "value": "I'm doing well, thanks!" }
+      ]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "kept",
+      "edits": {
+        "conversations[4].value": "I'm doing great, thank you for asking!"
+      },
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [],
+  "expectedEditPairs": [
+    {
+      "prompt": [
+        { "role": "system", "content": "You are a helpful assistant." },
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Hi there!" },
+        { "role": "user", "content": "How are you?" }
+      ],
+      "chosen": [{ "role": "assistant", "content": "I'm doing great, thank you for asking!" }],
+      "rejected": [{ "role": "assistant", "content": "I'm doing well, thanks!" }]
+    }
+  ],
+  "note": "Tests ShareGPT normalisation: from→role, value→content, gpt→assistant, human→user"
+}

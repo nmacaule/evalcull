@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { parse as losslessParse } from 'lossless-json';
+import { losslessParse } from '../lib/lossless';
 import type {
   RecordSource,
   RecordFormat,
@@ -131,7 +131,7 @@ export interface ReviewState {
     rejected: number;
     skipped: number;
     edited: number;
-    unparseable: number | null;
+    unparseable: number;
   };
 }
 
@@ -223,6 +223,22 @@ function findNextUnreviewed(
   return null;
 }
 
+/**
+ * Binary search for value in sorted Uint32Array.
+ */
+function binarySearch(arr: Uint32Array, value: number): boolean {
+  let lo = 0;
+  let hi = arr.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const midVal = arr[mid];
+    if (midVal === value) return true;
+    if (midVal < value) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
+}
+
 function matchesFilter(
   state: ReviewState,
   idx: number
@@ -247,7 +263,9 @@ function matchesFilter(
     case 'edited':
       return !!(decision?.edits && Object.keys(decision.edits).length > 0);
     case 'unparseable':
-      // Stubbed as always false until unparseable flag exists
+      if (state.source?.kind === 'jsonl') {
+        return binarySearch(state.source.index.unparseable, idx);
+      }
       return false;
     default:
       return true;
@@ -981,6 +999,12 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         }
       }
 
+      // Get unparseable count from index
+      let unparseableCount = 0;
+      if (state.source?.kind === 'jsonl') {
+        unparseableCount = state.source.index.unparseable.length;
+      }
+
       return {
         total,
         reviewed,
@@ -993,7 +1017,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         rejected,
         skipped,
         edited,
-        unparseable: null, // Unknown until FileIndex has flag
+        unparseable: unparseableCount,
       };
     },
   };

@@ -1,5 +1,10 @@
 {
   "description": "Keep/Reject only → zero pairs",
+  "format": {
+    "kind": "flat",
+    "promptPath": "prompt",
+    "responsePath": "response"
+  },
   "records": [
     { "prompt": "Q1", "response": "A1" },
     { "prompt": "Q2", "response": "A2" },

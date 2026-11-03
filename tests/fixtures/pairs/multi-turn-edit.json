@@ -1,5 +1,16 @@
 {
   "description": "Edit at turn k → prompt=turns[0..k-1], chosen=[edited], rejected=[original]",
+  "format": {
+    "kind": "messages",
+    "path": "messages",
+    "roleKey": "role",
+    "contentKey": "content",
+    "roles": {
+      "user": ["user"],
+      "assistant": ["assistant"],
+      "system": ["system"]
+    }
+  },
   "records": [
     {
       "messages": [
