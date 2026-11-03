@@ -684,7 +684,16 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       const currentEdits = existing?.edits ?? {};
       const before = currentEdits[path]; // undefined if not yet edited
 
-      const newEdits = { ...currentEdits, [path]: value };
+      // When value is undefined, remove the key (WP 6a: clearEdit for decision i)
+      let newEdits: Record<string, EditValue>;
+      if (value === undefined) {
+        const { [path]: removed, ...rest } = currentEdits;
+        void removed; // Consumed by destructuring
+        newEdits = rest;
+      } else {
+        newEdits = { ...currentEdits, [path]: value };
+      }
+
       const newDecision: Decision = {
         ...getOrCreateDecision(state.decisions, ref),
         edits: newEdits,
@@ -693,6 +702,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
 
       const newDecisions = new Map(state.decisions);
       newDecisions.set(ref, newDecision);
+      pruneIfEmpty(newDecisions, ref);
 
       set({ decisions: newDecisions });
       pushHistory({ type: 'edit', ref, path, before, after: value });
