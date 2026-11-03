@@ -1,0 +1,6 @@
+{
+  "kind": "preference",
+  "promptPath": "prompt",
+  "chosenPath": "chosen",
+  "rejectedPath": "rejected"
+}

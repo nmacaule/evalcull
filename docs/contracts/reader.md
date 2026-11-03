@@ -34,17 +34,38 @@ JSONL is byte-indexed (byte-exact export possible). Everything else is row-mater
 | Promptfoo results | Each test → prompt with candidates; ratings imported | Pairs and decisions as JSONL |
 | Vertex .jsonl | contents/parts → conversation shape | Byte-exact (it is JSONL) |
 
-## Record shapes (auto-detected)
+## Record shapes (auto-detected, WP 5)
 
-| Shape | Example keys |
-|-------|--------------|
-| flat | instruction/input/output; prompt/response; question/answer |
-| messages | `{"messages":[{"role","content"}]}` |
-| shareGPT | `{"conversations":[{"from","value"}]}` |
-| gemini | `{"contents":[{"role","parts"}]}` + optional systemInstruction |
-| preference | `{"prompt","chosen","rejected"}` |
-| candidates | Array of responses per prompt |
-| unknown | Fallback → mapping modal |
+| Shape | Example keys | Detection rule |
+|-------|--------------|----------------|
+| flat | instruction/input/output; prompt/response; question/answer | Prompt-like + response-like keys, both strings |
+| messages | `{"messages":[{"role","content"}]}` | Array with role/content elements |
+| shareGPT | `{"conversations":[{"from","value"}]}` | Array with from/value elements (detected as messages) |
+| gemini | `{"contents":[{"role","parts"}]}` | Detects as unknown; WP 12 Vertex reader maps it |
+| preference | `{"prompt","chosen","rejected"}` | chosen + rejected keys; prompt optional |
+| candidates | Array of string responses per prompt | String array + prompt-like key |
+| unknown | Fallback → mapping modal | < 80% sample matches any shape |
+
+### Detection parameters
+
+- Sample size: up to 10 parseable records
+- Match threshold: ≥ 80% of sample AND at least one record
+- Tie order: preference > messages > candidates > flat
+
+## Grouping (WP 5)
+
+| Format kind | Grouping key |
+|-------------|--------------|
+| flat | Value at promptPath |
+| messages | All turns before last assistant, JSON serialised |
+| preference with promptPath | Value at promptPath |
+| preference without promptPath | No grouping (each record own group) |
+| candidates | Value at promptPath |
+| unknown | No grouping (each record own group) |
+| Unparseable lines | Each line its own singleton group |
+
+Hash: FNV-1a 32-bit (lo) + djb2 32-bit (hi) for 64-bit composite.
+Collision probability: ~3e-8 at 1M distinct prompts.
 
 ## Reader completion rule
 

@@ -33,7 +33,6 @@ beforeEach(() => {
     lastSavedAt: null,
     session: { kind: 'fresh' },
     newerLocalCopy: null,
-    groupsStale: false,
     _dirty: false,
     _lastSerializedText: null,
   });
@@ -75,6 +74,7 @@ describe('IndexedDB absent', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     // Store loads successfully
@@ -104,6 +104,7 @@ describe('IndexedDB absent', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().next();
@@ -121,6 +122,7 @@ describe('IndexedDB absent', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     const record = await useReviewStore.getState().record(0);
@@ -137,6 +139,7 @@ describe('IndexedDB absent', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().decide('0', 'kept');

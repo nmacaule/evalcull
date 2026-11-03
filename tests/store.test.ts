@@ -15,7 +15,10 @@ import {
   makeFetchTransport,
   type SidecarTransport,
 } from '../src/store/persistence';
-import { useReviewStore } from '../src/store/useReviewStore';
+import {
+  useReviewStore,
+  clearRegroupHandle,
+} from '../src/store/useReviewStore';
 import {
   isValidRef,
   parseRefLine,
@@ -62,7 +65,6 @@ beforeEach(() => {
     lastSavedAt: null,
     session: { kind: 'fresh' },
     newerLocalCopy: null,
-    groupsStale: false,
     _dirty: false,
     _lastSerializedText: null,
   });
@@ -366,6 +368,7 @@ describe('persistence', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'abc123',
+      format: { kind: 'unknown' },
     });
 
     // Import mismatched fingerprint with force
@@ -381,6 +384,7 @@ describe('persistence', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'abc123',
+      format: { kind: 'unknown' },
     });
 
     const unknownText = readFileSync(
@@ -406,6 +410,7 @@ describe('persistence', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     // Make a change to trigger save
@@ -438,6 +443,7 @@ describe('undo/redo', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
   }
 
@@ -661,6 +667,7 @@ describe('undo/redo', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'unsafe-test',
+      format: { kind: 'unknown' },
     });
 
     // Import the session
@@ -692,6 +699,7 @@ describe('navigation', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     const initialPastLength = useReviewStore.getState().past.length;
@@ -714,6 +722,7 @@ describe('navigation', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().goTo(4);
@@ -736,6 +745,7 @@ describe('record cache', () => {
     await useReviewStore.getState().load(source1, {
       sourceName: 'file1.jsonl',
       fingerprint: 'fp1',
+      format: { kind: 'unknown' },
     });
 
     const record1 = await useReviewStore.getState().record(0);
@@ -757,6 +767,7 @@ describe('record cache', () => {
     await useReviewStore.getState().load(source2, {
       sourceName: 'file2.jsonl',
       fingerprint: 'fp2',
+      format: { kind: 'unknown' },
     });
 
     const record2 = await useReviewStore.getState().record(0);
@@ -773,6 +784,7 @@ describe('record cache', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'abc123',
+      format: { kind: 'unknown' },
     });
 
     // Access a record
@@ -803,6 +815,7 @@ describe('IndexedDB', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     // Make change and wait for save
@@ -813,6 +826,7 @@ describe('IndexedDB', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     expect(useReviewStore.getState().session.kind).toBe('restored');
@@ -830,6 +844,7 @@ describe('IndexedDB', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'seam-test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().decide('0', 'kept');
@@ -859,7 +874,6 @@ describe('IndexedDB', () => {
       lastSavedAt: null,
       session: { kind: 'fresh' },
       newerLocalCopy: null,
-      groupsStale: false,
       _dirty: false,
       _lastSerializedText: null,
     });
@@ -868,6 +882,7 @@ describe('IndexedDB', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'seam-test-fp',
+      format: { kind: 'unknown' },
     });
 
     expect(useReviewStore.getState().session.kind).toBe('fresh');
@@ -891,6 +906,7 @@ describe('sidecar transport', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     // Make change to trigger save
@@ -989,6 +1005,7 @@ describe('save queue', () => {
     await useReviewStore.getState().load(source1, {
       sourceName: 'file1.jsonl',
       fingerprint: 'fp1',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().decide('0', 'kept');
@@ -1003,6 +1020,7 @@ describe('save queue', () => {
     await useReviewStore.getState().load(source2, {
       sourceName: 'file2.jsonl',
       fingerprint: 'fp2',
+      format: { kind: 'unknown' },
     });
 
     // Complete the old PUT
@@ -1037,6 +1055,7 @@ describe('save queue', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     // First change triggers debounced save
@@ -1102,6 +1121,7 @@ describe('counts', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().decide('0', 'kept');
@@ -1125,6 +1145,7 @@ describe('counts', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
     });
 
     useReviewStore.getState().setMode('compare');
@@ -1148,5 +1169,159 @@ describe('counts', () => {
     expect(counts.tie).toBe(1);
     expect(counts.bothBad).toBe(1);
     expect(counts.reviewed).toBe(4);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Regroup on restore tests
+// -----------------------------------------------------------------------------
+
+describe('regroup on restore', () => {
+  it('regroups when restored session format differs from meta.format in load()', async () => {
+    // Create source with initial grouping (each line = own group)
+    const source = createMockSource(6);
+
+    // Create a session with a different format
+    const sessionWithFlatFormat = {
+      version: 2,
+      fingerprint: 'test-fp',
+      sourceName: 'test.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: {},
+      cursor: 0,
+      history: [],
+      savedAt: Date.now(),
+    };
+    const sessionText = JSON.stringify(sessionWithFlatFormat, null, 2);
+
+    // Configure IDB with our own factory and seed the session
+    const idbFactory = new IDBFactory();
+    configureStorage({ indexedDB: idbFactory });
+
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = idbFactory.open('evalcull', 1);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('sessions');
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('sessions', 'readwrite');
+      tx.objectStore('sessions').put(sessionText, 'test-fp');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+
+    // Track regroup calls
+    let regroupCalledWith: unknown = null;
+
+    // Load with different meta.format, passing handle
+    await useReviewStore.getState().load(
+      source,
+      {
+        sourceName: 'test.jsonl',
+        fingerprint: 'test-fp',
+        format: { kind: 'unknown' }, // Different from session's flat format
+      },
+      {
+        regroup: async (format) => {
+          regroupCalledWith = format;
+          // Return grouped: 0,2,4 -> group 0; 1,3,5 -> group 1
+          const groups = new Uint32Array([0, 1, 0, 1, 0, 1]);
+          return { groups, groupCount: 2, unparseable: new Uint32Array(0) };
+        },
+        dispose: () => {},
+      }
+    );
+
+    // Verify regroup was called with the session's format
+    expect(regroupCalledWith).toEqual({
+      kind: 'flat',
+      promptPath: 'prompt',
+      responsePath: 'response',
+    });
+
+    // Verify index was updated
+    if (source.kind !== 'jsonl') throw new Error('Expected jsonl source');
+    expect(source.index.groupCount).toBe(2);
+    expect(Array.from(source.index.groups)).toEqual([0, 1, 0, 1, 0, 1]);
+
+    // Verify store has session's format
+    expect(useReviewStore.getState().format).toEqual({
+      kind: 'flat',
+      promptPath: 'prompt',
+      responsePath: 'response',
+    });
+
+    clearRegroupHandle('test-fp');
+  });
+
+  it('regroups when imported session format differs from current in importSession()', async () => {
+    // Create source with initial grouping
+    const source = createMockSource(6);
+
+    // Track regroup calls
+    let regroupCalledWith: unknown = null;
+
+    // Load with unknown format and a handle (handle will be registered)
+    await useReviewStore.getState().load(
+      source,
+      {
+        sourceName: 'test.jsonl',
+        fingerprint: 'test-fp',
+        format: { kind: 'unknown' },
+      },
+      {
+        regroup: async (format) => {
+          regroupCalledWith = format;
+          const groups = new Uint32Array([0, 1, 0, 1, 0, 1]);
+          return { groups, groupCount: 2, unparseable: new Uint32Array(0) };
+        },
+        dispose: () => {},
+      }
+    );
+
+    // Import a session with different format
+    const sessionWithFlatFormat = {
+      version: 2,
+      fingerprint: 'test-fp',
+      sourceName: 'test.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: {},
+      cursor: 0,
+      history: [],
+      savedAt: Date.now(),
+    };
+    const sessionText = JSON.stringify(sessionWithFlatFormat, null, 2);
+
+    await useReviewStore.getState().importSession(sessionText, { force: true });
+
+    // Verify import succeeded (fails here if session was refused)
+    expect(useReviewStore.getState().session.kind).toBe('restored');
+
+    // Verify regroup was called with the session's format
+    expect(regroupCalledWith).toEqual({
+      kind: 'flat',
+      promptPath: 'prompt',
+      responsePath: 'response',
+    });
+
+    // Verify index was updated
+    if (source.kind !== 'jsonl') throw new Error('Expected jsonl source');
+    expect(source.index.groupCount).toBe(2);
+    expect(Array.from(source.index.groups)).toEqual([0, 1, 0, 1, 0, 1]);
+
+    // Verify store has session's format
+    expect(useReviewStore.getState().format).toEqual({
+      kind: 'flat',
+      promptPath: 'prompt',
+      responsePath: 'response',
+    });
+
+    clearRegroupHandle('test-fp');
   });
 });

@@ -1,0 +1,5 @@
+{"prompt": "What is 2+2?", "chosen": "4", "rejected": "5"}
+{"prompt": "Capital of France?", "chosen": "Paris", "rejected": "London"}
+{"chosen": "Blue", "rejected": "Green"}
+{"prompt": "What is water?", "chosen": "H2O", "rejected": "CO2"}
+{"chosen": "Red", "rejected": "Purple"}

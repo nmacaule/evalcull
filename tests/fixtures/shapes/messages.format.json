@@ -1,0 +1,11 @@
+{
+  "kind": "messages",
+  "path": "messages",
+  "roleKey": "role",
+  "contentKey": "content",
+  "roles": {
+    "user": ["user"],
+    "assistant": ["assistant"],
+    "system": ["system"]
+  }
+}

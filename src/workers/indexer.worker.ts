@@ -13,16 +13,17 @@
  *   { type: 'indexed', starts, ends, eols, hasBom, lineCount }
  *   Transfer list: [starts.buffer, ends.buffer, eols.buffer]
  *
- * Main thread → Worker (grouping + unparseable, WP 4/5):
- *   { type: 'group', blob: Blob, starts, ends, hasBom, promptPath: string }
+ * Main thread → Worker (grouping + unparseable, WP 5):
+ *   { type: 'group', blob: Blob, starts, ends, hasBom, format: RecordFormat }
  *
  * Worker → Main thread (grouping complete):
  *   { type: 'grouped', groups: Uint32Array, groupCount: number, unparseable: Uint32Array }
  *   Transfer list: [groups.buffer, unparseable.buffer]
  */
 
+import type { RecordFormat } from '../types';
 import { indexBlob } from '../lib/indexer';
-import { detectUnparseable } from '../lib/detectUnparseable';
+import { secondPass } from '../lib/secondPass';
 
 export type IndexerMessage =
   | { type: 'index'; blob: Blob }
@@ -32,7 +33,7 @@ export type IndexerMessage =
       starts: Float64Array;
       ends: Float64Array;
       hasBom: boolean;
-      promptPath: string;
+      format: RecordFormat;
     };
 
 export type IndexerResponse =
@@ -69,30 +70,24 @@ self.onmessage = async (e: MessageEvent<IndexerMessage>) => {
       transfer: [result.starts.buffer, result.ends.buffer, result.eols.buffer],
     });
   } else if (msg.type === 'group') {
-    // Real grouping (hash promptPath) added in WP 5 after shape detection.
-    // For now, each line is its own group: groups[i] = i, groupCount = lineCount.
-    // WP 4 adds unparseable detection using the same streaming pattern.
-    const lineCount = msg.starts.length;
-    const groups = new Uint32Array(lineCount);
-    for (let i = 0; i < lineCount; i++) {
-      groups[i] = i;
-    }
-
-    // Detect unparseable lines (WP 4)
-    const unparseable = await detectUnparseable(
+    // WP 5: real grouping with format-based key extraction + unparseable detection
+    const result = await secondPass(
       msg.blob,
       msg.starts,
       msg.ends,
-      msg.hasBom
+      msg.hasBom,
+      msg.format
     );
 
     const response: IndexerResponse = {
       type: 'grouped',
-      groups,
-      groupCount: lineCount,
-      unparseable,
+      groups: result.groups,
+      groupCount: result.groupCount,
+      unparseable: result.unparseable,
     };
 
-    self.postMessage(response, { transfer: [groups.buffer, unparseable.buffer] });
+    self.postMessage(response, {
+      transfer: [result.groups.buffer, result.unparseable.buffer],
+    });
   }
 };

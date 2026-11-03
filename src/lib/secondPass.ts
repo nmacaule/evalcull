@@ -1,0 +1,145 @@
+/**
+ * Second pass over JSONL blob: unparseable detection + grouping in one read.
+ *
+ * Streams blob in chunks, decodes and JSON.parse each line once.
+ * Extracts grouping key per format and assigns group IDs.
+ * Records unparseable line indices.
+ */
+
+import type { RecordFormat } from '../types';
+import { hash64, GroupIdMap, extractGroupKey } from './groups';
+
+export interface SecondPassResult {
+  unparseable: Uint32Array;
+  groups: Uint32Array;
+  groupCount: number;
+}
+
+/**
+ * Single streaming pass for unparseable detection and grouping.
+ *
+ * @param blob JSONL blob
+ * @param starts Line start offsets
+ * @param ends Line end offsets (before line ending)
+ * @param hasBom Whether blob starts with UTF-8 BOM
+ * @param format Record format for grouping key extraction
+ */
+export async function secondPass(
+  blob: Blob,
+  starts: Float64Array,
+  ends: Float64Array,
+  hasBom: boolean,
+  format: RecordFormat
+): Promise<SecondPassResult> {
+  const lineCount = starts.length;
+  if (lineCount === 0) {
+    return {
+      unparseable: new Uint32Array(0),
+      groups: new Uint32Array(0),
+      groupCount: 0,
+    };
+  }
+
+  const unparseable: number[] = [];
+  const groups = new Uint32Array(lineCount);
+  const groupIdMap = new GroupIdMap();
+
+  // ignoreBOM: true so decoder does NOT auto-strip; we skip bytes explicitly for line 0
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+  // Stream the blob in chunks, tracking position
+  const reader = blob.stream().getReader();
+  let buffer = new Uint8Array(0);
+  let bufferStart = 0; // absolute position of buffer[0] in the file
+  let lineIdx = 0;
+
+  // Track whether format provides grouping
+  const hasGrouping =
+    format.kind !== 'unknown' &&
+    !(format.kind === 'preference' && !format.promptPath);
+
+  for (;;) {
+    const { value, done } = await reader.read();
+
+    if (value) {
+      // Append chunk to buffer
+      const newBuffer = new Uint8Array(buffer.length + value.length);
+      newBuffer.set(buffer);
+      newBuffer.set(value, buffer.length);
+      buffer = newBuffer;
+    }
+
+    // Process all complete lines we can from the buffer
+    while (lineIdx < lineCount) {
+      const lineStart = starts[lineIdx];
+      const lineEnd = ends[lineIdx];
+
+      // Check if this line is fully in the buffer
+      const localStart = lineStart - bufferStart;
+      const localEnd = lineEnd - bufferStart;
+
+      if (localEnd > buffer.length) {
+        // Need more data for this line
+        break;
+      }
+
+      // Extract line bytes
+      let lineBytes: Uint8Array;
+      if (lineIdx === 0 && hasBom && localStart === 0) {
+        // Skip BOM for line 0
+        lineBytes = buffer.subarray(Math.max(localStart, 3), localEnd);
+      } else {
+        lineBytes = buffer.subarray(localStart, localEnd);
+      }
+
+      // Decode and try to parse
+      const text = decoder.decode(lineBytes);
+      let parsed: unknown;
+      let parseOk = false;
+
+      try {
+        parsed = JSON.parse(text);
+        parseOk = true;
+      } catch {
+        unparseable.push(lineIdx);
+      }
+
+      // Assign group ID
+      if (!parseOk || !hasGrouping) {
+        // Unparseable or no grouping: each line is its own group
+        groups[lineIdx] = groupIdMap.getOrCreate(lineIdx, 0);
+      } else {
+        // Extract grouping key and hash
+        const key = extractGroupKey(parsed, format);
+        if (key === undefined) {
+          // No key extracted: own group
+          groups[lineIdx] = groupIdMap.getOrCreate(lineIdx, 0);
+        } else {
+          const [hi, lo] = hash64(key);
+          groups[lineIdx] = groupIdMap.getOrCreate(hi, lo);
+        }
+      }
+
+      lineIdx++;
+    }
+
+    // Trim processed bytes from buffer
+    if (lineIdx > 0 && lineIdx <= lineCount) {
+      const lastProcessedEnd =
+        lineIdx < lineCount ? ends[lineIdx - 1] : ends[lineCount - 1];
+      const trimPoint = lastProcessedEnd - bufferStart;
+      if (trimPoint > 0 && trimPoint <= buffer.length) {
+        buffer = buffer.subarray(trimPoint);
+        bufferStart = lastProcessedEnd;
+      }
+    }
+
+    if (done) break;
+  }
+
+  return {
+    unparseable: Uint32Array.from(unparseable),
+    groups,
+    groupCount: groupIdMap.count,
+  };
+}

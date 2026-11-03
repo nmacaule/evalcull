@@ -166,15 +166,61 @@ console.log(`  Has BOM: ${result.hasBom}`);
 console.log(`  First pass: ${indexTime.toFixed(0)} ms`);
 
 // -----------------------------------------------------------------------------
-// Second pass: decode + JSON.parse each line (WP 4 unparseable detection)
-// Mirrors the logic in src/workers/indexer.worker.ts detectUnparseable()
+// Inlined grouping logic (mirrors src/lib/groups.ts per-line cost only)
 // -----------------------------------------------------------------------------
 
-console.log('Running second pass (decode + JSON.parse)...');
+function fnv1a32(str) {
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function djb2(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+  }
+  return hash >>> 0;
+}
+
+class GroupIdMap {
+  constructor() {
+    this.map = new Map();
+    this.nextId = 0;
+  }
+  getOrCreate(hi, lo) {
+    let inner = this.map.get(hi);
+    if (!inner) {
+      inner = new Map();
+      this.map.set(hi, inner);
+    }
+    let id = inner.get(lo);
+    if (id === undefined) {
+      id = this.nextId++;
+      inner.set(lo, id);
+    }
+    return id;
+  }
+  get count() {
+    return this.nextId;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Second pass: decode + parse + group (mirrors src/lib/secondPass.ts)
+// -----------------------------------------------------------------------------
+
+console.log('Running second pass (decode + parse + group)...');
 const startSecond = performance.now();
 
-const decoder = new TextDecoder('utf-8');
+// ignoreBOM: true so decoder does NOT auto-strip; BOM skipped via byte offset for line 0
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 const unparseable = [];
+const groups = new Uint32Array(result.lineCount);
+const groupIdMap = new GroupIdMap();
 
 // Stream the blob in chunks, same pattern as first pass
 const reader2 = blob.stream().getReader();
@@ -208,10 +254,25 @@ for (;;) {
     }
 
     const text = decoder.decode(lineBytes);
+    let parsed;
+    let parseOk = false;
+
     try {
-      JSON.parse(text);
+      parsed = JSON.parse(text);
+      parseOk = true;
     } catch {
       unparseable.push(lineIdx);
+    }
+
+    // Assign group ID (mirrors secondPass per-line cost)
+    // Generated data has { id, text }; key = String(parsed.id)
+    if (!parseOk) {
+      groups[lineIdx] = groupIdMap.getOrCreate(lineIdx, 0);
+    } else {
+      const key = String(parsed.id);
+      const hi = djb2(key);
+      const lo = fnv1a32(key);
+      groups[lineIdx] = groupIdMap.getOrCreate(hi, lo);
     }
 
     lineIdx++;
@@ -232,6 +293,7 @@ for (;;) {
 const secondPassTime = performance.now() - startSecond;
 console.log(`  Second pass: ${secondPassTime.toFixed(0)} ms`);
 console.log(`  Unparseable: ${unparseable.length}`);
+console.log(`  Groups: ${groupIdMap.count.toLocaleString()}`);
 
 const totalTime = indexTime + secondPassTime;
 console.log(`  Total: ${totalTime.toFixed(0)} ms`);
@@ -244,5 +306,5 @@ console.log('\nTemp file deleted.');
 console.log(`\n--- For STATUS.md ---`);
 console.log(`100 MB / ${result.lineCount.toLocaleString()} lines:`);
 console.log(`  First pass (index): ${indexTime.toFixed(0)} ms`);
-console.log(`  Second pass (decode + JSON.parse): ${secondPassTime.toFixed(0)} ms (Node figure)`);
+console.log(`  Second pass (decode + parse + group): ${secondPassTime.toFixed(0)} ms (Node figure)`);
 console.log(`  Total: ${totalTime.toFixed(0)} ms`);

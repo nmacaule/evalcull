@@ -1,0 +1,11 @@
+{
+  "kind": "messages",
+  "path": "conversations",
+  "roleKey": "from",
+  "contentKey": "value",
+  "roles": {
+    "user": ["human"],
+    "assistant": ["gpt"],
+    "system": ["system"]
+  }
+}

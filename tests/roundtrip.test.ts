@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { indexBlob } from '../src/lib/indexer';
-import { detectUnparseable } from '../src/lib/detectUnparseable';
+import { secondPass } from '../src/lib/secondPass';
 import { exportLines } from '../src/export/exportLines';
 import { losslessParse } from '../src/lib/lossless';
 import { useReviewStore } from '../src/store/useReviewStore';
@@ -641,7 +641,6 @@ describe('edit then undo exports byte-identical (WP 4)', () => {
       lastSavedAt: null,
       session: { kind: 'fresh' },
       newerLocalCopy: null,
-      groupsStale: false,
       _dirty: false,
       _lastSerializedText: null,
     });
@@ -670,6 +669,7 @@ describe('edit then undo exports byte-identical (WP 4)', () => {
     await useReviewStore.getState().load(source, {
       sourceName: 'lf.jsonl',
       fingerprint: 'test-fingerprint',
+      format: { kind: 'unknown' },
     });
 
     // Edit line 0
@@ -699,10 +699,10 @@ describe('edit then undo exports byte-identical (WP 4)', () => {
   });
 });
 
-describe('unparseable detection (WP 4)', () => {
+describe('unparseable detection (WP 4, updated WP 5)', () => {
   const fixtures = getFixtureNames();
 
-  it.each(fixtures)('%s: detectUnparseable matches fixture metadata', async (name) => {
+  it.each(fixtures)('%s: secondPass unparseable matches fixture metadata', async (name) => {
     const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
     const meta: FixtureMeta = JSON.parse(
       readFileSync(join(fixturesDir, `${name}.meta.json`), 'utf-8')
@@ -716,17 +716,18 @@ describe('unparseable detection (WP 4)', () => {
       }
     }
 
-    // Run detectUnparseable from src/lib (same code as worker)
+    // Run secondPass from src/lib (merged unparseable + grouping, WP 5)
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
-    const actualUnparseable = await detectUnparseable(
+    const indexResult = await indexBlob(blob);
+    const passResult = await secondPass(
       blob,
-      result.starts,
-      result.ends,
-      result.hasBom
+      indexResult.starts,
+      indexResult.ends,
+      indexResult.hasBom,
+      { kind: 'unknown' } // No grouping for unparseable test
     );
 
-    expect(Array.from(actualUnparseable)).toEqual(expectedUnparseable);
+    expect(Array.from(passResult.unparseable)).toEqual(expectedUnparseable);
   });
 
   it('record() and JSON.parse agree on validity for all fixtures', async () => {
