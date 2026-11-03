@@ -1,0 +1,3 @@
+{"contents": [{"role": "user", "parts": [{"text": "Hello"}]}, {"role": "model", "parts": [{"text": "Hi!"}]}]}
+{"contents": [{"role": "user", "parts": [{"text": "How are you?"}]}, {"role": "model", "parts": [{"text": "Good!"}]}]}
+{"systemInstruction": {"parts": [{"text": "Be helpful"}]}, "contents": [{"role": "user", "parts": [{"text": "Help"}]}, {"role": "model", "parts": [{"text": "Sure"}]}]}

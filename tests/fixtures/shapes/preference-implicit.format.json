@@ -1,0 +1,5 @@
+{
+  "kind": "preference",
+  "chosenPath": "chosen",
+  "rejectedPath": "rejected"
+}

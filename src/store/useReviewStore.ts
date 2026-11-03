@@ -1,6 +1,8 @@
 /**
  * Review store for WP 3.
  * Implements §3.5 ReviewState interface.
+ *
+ * WP 5: Added regroupHandle registry and setFormat action.
  */
 
 import { create } from 'zustand';
@@ -40,6 +42,7 @@ import {
   saveImmediate,
   cancelPendingSaves,
 } from './persistence';
+import type { GroupResult } from '../readers/jsonl';
 
 // -----------------------------------------------------------------------------
 // Module-private record cache
@@ -49,6 +52,43 @@ const recordCache = new LRUCache<number, Promise<ParsedRecord>>(100);
 
 function clearRecordCache(): void {
   recordCache.clear();
+}
+
+// -----------------------------------------------------------------------------
+// Module-private regroup handle registry (WP 5)
+// -----------------------------------------------------------------------------
+
+type RegroupFn = (format: RecordFormat) => Promise<GroupResult>;
+type DisposeFn = () => void;
+
+interface RegroupHandle {
+  regroup: RegroupFn;
+  dispose: DisposeFn;
+}
+
+const regroupHandles = new Map<string, RegroupHandle>();
+
+/**
+ * Register regroup and dispose functions for a fingerprint.
+ * Called by load() with the closures from the reader.
+ */
+export function registerRegroupHandle(
+  fingerprint: string,
+  regroup: RegroupFn,
+  dispose: DisposeFn
+): void {
+  regroupHandles.set(fingerprint, { regroup, dispose });
+}
+
+/**
+ * Clear regroup handle for a fingerprint and dispose the worker.
+ */
+export function clearRegroupHandle(fingerprint: string): void {
+  const handle = regroupHandles.get(fingerprint);
+  if (handle) {
+    handle.dispose();
+    regroupHandles.delete(fingerprint);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -87,7 +127,6 @@ export interface ReviewState {
   lastSavedAt: number | null;
   session: SessionOutcome;
   newerLocalCopy: { savedAt: number } | null;
-  groupsStale: boolean;
 
   // Dirty tracking for exportSession
   _dirty: boolean;
@@ -96,8 +135,10 @@ export interface ReviewState {
   // Actions
   load(
     source: RecordSource,
-    meta: { sourceName: string; fingerprint: string }
+    meta: { sourceName: string; fingerprint: string; format: RecordFormat },
+    handle?: { regroup: RegroupFn; dispose: DisposeFn }
   ): Promise<void>;
+  setFormat(format: RecordFormat): Promise<void>;
   record(i: number): Promise<ParsedRecord>;
   prefer(p: Preference, strength?: 1 | 2 | 3): void;
   decide(ref: CandidateRef, status: DecisionStatus): void;
@@ -116,7 +157,7 @@ export interface ReviewState {
   setFocus(f: 0 | 1): void;
   toggleFocus(): void;
   exportSession(): string;
-  importSession(text: string, opts?: { force?: boolean }): void;
+  importSession(text: string, opts?: { force?: boolean }): Promise<void>;
   applyNewerLocalCopy(): Promise<void>;
 
   counts(): {
@@ -163,6 +204,14 @@ function deriveMode(format: RecordFormat, source: RecordSource): 'compare' | 'si
 function clampCursor(cursor: number, total: number): number {
   if (total === 0) return 0;
   return Math.max(0, Math.min(cursor, total - 1));
+}
+
+/**
+ * Deep equality check for RecordFormat.
+ */
+function formatEquals(a: RecordFormat, b: RecordFormat): boolean {
+  if (a.kind !== b.kind) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function getOrCreateDecision(
@@ -361,19 +410,21 @@ export const useReviewStore = create<ReviewState>((set, get) => {
     lastSavedAt: null,
     session: { kind: 'fresh' },
     newerLocalCopy: null,
-    groupsStale: false,
     _dirty: false,
     _lastSerializedText: null,
 
-    async load(source, meta) {
+    async load(source, meta, handle) {
       // Clear cache and cancel pending saves
       clearRecordCache();
       bumpSaveGeneration();
 
-      // Derive mode from format
-      const detectedMode = deriveMode(source.kind === 'jsonl'
-        ? { kind: 'unknown' } // Will be updated after format detection
-        : { kind: 'unknown' }, source);
+      // Clear previous regroup handle (also disposes worker) and register new one
+      const prevFp = get().fingerprint;
+      if (prevFp) clearRegroupHandle(prevFp);
+      if (handle) registerRegroupHandle(meta.fingerprint, handle.regroup, handle.dispose);
+
+      // Derive mode from the provided format (no regroup on load)
+      const detectedMode = deriveMode(meta.format, source);
 
       // Try to load existing session
       let sessionText: string | null = null;
@@ -410,7 +461,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
             source,
             sourceName: meta.sourceName,
             fingerprint: meta.fingerprint,
-            format: { kind: 'unknown' },
+            format: meta.format,
             decisions: new Map(),
             mode: detectedMode,
             cursor: 0,
@@ -438,7 +489,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
             source,
             sourceName: meta.sourceName,
             fingerprint: meta.fingerprint,
-            format: { kind: 'unknown' },
+            format: meta.format,
             decisions: new Map(),
             mode: detectedMode,
             cursor: 0,
@@ -460,11 +511,26 @@ export const useReviewStore = create<ReviewState>((set, get) => {
 
         // Apply session
         const restored = stateFromSession(result.session);
-        const total = getPromptCount({
-          ...get(),
-          source,
-          mode: deriveMode(restored.format, source),
-        } as ReviewState);
+
+        // If restored format differs from meta.format, regroup the index
+        if (
+          !formatEquals(meta.format, restored.format) &&
+          source.kind === 'jsonl' &&
+          handle
+        ) {
+          const regroupResult = await handle.regroup(restored.format);
+          source.index.groups = regroupResult.groups;
+          source.index.groupCount = regroupResult.groupCount;
+          source.index.unparseable = regroupResult.unparseable;
+        }
+
+        const restoredMode = deriveMode(restored.format, source);
+        const total =
+          restoredMode === 'compare' && source.kind === 'jsonl'
+            ? source.index.groupCount
+            : source.kind === 'jsonl'
+              ? source.index.lineCount
+              : (source as { count: number }).count;
 
         set({
           source,
@@ -472,7 +538,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
           fingerprint: meta.fingerprint,
           format: restored.format,
           decisions: restored.decisions,
-          mode: deriveMode(restored.format, source),
+          mode: restoredMode,
           cursor: clampCursor(restored.cursor, total),
           focus: 0,
           past: restored.past,
@@ -487,12 +553,12 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         return;
       }
 
-      // Fresh session
+      // Fresh session - use format from meta (no regroup needed, already done by reader)
       set({
         source,
         sourceName: meta.sourceName,
         fingerprint: meta.fingerprint,
-        format: { kind: 'unknown' },
+        format: meta.format,
         decisions: new Map(),
         mode: detectedMode,
         cursor: 0,
@@ -832,6 +898,73 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       set({ mode: m });
     },
 
+    async setFormat(format) {
+      const state = get();
+
+      // No-op if format is unchanged
+      if (formatEquals(state.format, format)) {
+        return;
+      }
+
+      if (!state.source || state.source.kind !== 'jsonl') {
+        // setFormat only applies to JSONL sources
+        set({ format });
+        return;
+      }
+
+      const handle = regroupHandles.get(state.fingerprint);
+      if (!handle) {
+        // No regroup handle - just update format
+        set({ format });
+        return;
+      }
+
+      // Resolve current line before regrouping
+      const oldGroups = state.source.index.groups;
+      let currentLine: number;
+      if (state.mode === 'compare') {
+        // Find first line whose old group equals the cursor (group index)
+        currentLine = 0;
+        for (let i = 0; i < oldGroups.length; i++) {
+          if (oldGroups[i] === state.cursor) {
+            currentLine = i;
+            break;
+          }
+        }
+      } else {
+        // Single mode: cursor is the line
+        currentLine = state.cursor;
+      }
+
+      // Run regroup with new format
+      const result = await handle.regroup(format);
+
+      // Re-derive mode
+      const newMode = deriveMode(format, state.source);
+
+      // Map through new groups or keep as line
+      let newCursor: number;
+      if (newMode === 'compare') {
+        // Map to new group
+        newCursor = currentLine < result.groups.length ? result.groups[currentLine] : 0;
+      } else {
+        // Single mode: keep as line
+        newCursor = currentLine;
+      }
+
+      // Clamp cursor
+      const total = newMode === 'compare' ? result.groupCount : state.source.index.lineCount;
+      newCursor = clampCursor(newCursor, total);
+
+      set({
+        format,
+        mode: newMode,
+        cursor: newCursor,
+      });
+
+      scheduleStoreSave();
+    },
+
     setFocus(f) {
       set({ focus: f });
     },
@@ -867,7 +1000,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       return state._lastSerializedText;
     },
 
-    importSession(text, opts) {
+    async importSession(text, opts) {
       const state = get();
 
       // Clear cache and cancel pending saves
@@ -915,12 +1048,35 @@ export const useReviewStore = create<ReviewState>((set, get) => {
 
       // Apply session with live fingerprint
       const restored = stateFromSession(result.session);
-      const total = getPromptCount(state);
+
+      // If imported format differs from current, regroup the index
+      if (
+        state.source?.kind === 'jsonl' &&
+        !formatEquals(state.format, restored.format)
+      ) {
+        const handle = regroupHandles.get(state.fingerprint);
+        if (handle) {
+          const regroupResult = await handle.regroup(restored.format);
+          state.source.index.groups = regroupResult.groups;
+          state.source.index.groupCount = regroupResult.groupCount;
+          state.source.index.unparseable = regroupResult.unparseable;
+        }
+      }
+
+      const importedMode = state.source
+        ? deriveMode(restored.format, state.source)
+        : 'single';
+      const total =
+        importedMode === 'compare' && state.source?.kind === 'jsonl'
+          ? state.source.index.groupCount
+          : state.source?.kind === 'jsonl'
+            ? state.source.index.lineCount
+            : getPromptCount(state);
 
       set({
         format: restored.format,
         decisions: restored.decisions,
-        mode: state.source ? deriveMode(restored.format, state.source) : 'single',
+        mode: importedMode,
         cursor: clampCursor(restored.cursor, total),
         past: restored.past,
         future: [],
@@ -939,7 +1095,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
 
       const text = await loadFromIndexedDB(state.fingerprint);
       if (text) {
-        get().importSession(text, { force: true });
+        await get().importSession(text, { force: true });
         set({ newerLocalCopy: null });
       }
     },

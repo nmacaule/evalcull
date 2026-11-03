@@ -1,19 +1,51 @@
 /**
  * JSONL reader: produces a RecordSource with byte-exact access.
+ *
+ * WP 5: Returns format and regroup closure for format changes.
  */
 
-import type { FileIndex, RecordSource } from '../types';
+import type { FileIndex, RecordSource, RecordFormat } from '../types';
 import { fingerprint } from '../lib/fingerprint';
+import { detectFormat } from '../lib/schema';
+import { readLineText } from '../lib/readLine';
 import IndexerWorker from '../workers/indexer.worker?worker&inline';
 import type { IndexerMessage, IndexerResponse } from '../workers/indexer.worker';
+
+/** Number of records to sample for shape detection */
+const SAMPLE_SIZE = 10;
+
+export interface GroupResult {
+  groups: Uint32Array;
+  groupCount: number;
+  unparseable: Uint32Array;
+}
+
+export interface JsonlReaderResult {
+  source: Extract<RecordSource, { kind: 'jsonl' }>;
+  format: RecordFormat;
+  /**
+   * Re-run grouping with a different format.
+   * Closure over the blob and worker this reader owns.
+   */
+  regroup(format: RecordFormat): Promise<GroupResult>;
+  /**
+   * Terminate the worker. Call when done with this reader.
+   */
+  dispose(): void;
+}
 
 export interface JsonlReaderOptions {
   /** Progress callback during indexing */
   onProgress?: (bytes: number, total: number) => void;
+  /**
+   * Skip detection; use this format for grouping.
+   * For boot code that has already read a session.
+   */
+  format?: RecordFormat;
 }
 
 /**
- * Read a JSONL file and produce a RecordSource.
+ * Read a JSONL file and produce a RecordSource with format detection.
  *
  * @param file The file to read (or a Blob with name/size/lastModified from /api/meta)
  * @param name File name (for fingerprinting)
@@ -27,11 +59,12 @@ export async function readJsonl(
   size: number,
   lastModified: number,
   options: JsonlReaderOptions = {}
-): Promise<RecordSource> {
+): Promise<JsonlReaderResult> {
   const fp = await fingerprint(name, size, lastModified);
 
   const worker = new IndexerWorker();
 
+  // First pass: byte indexing
   const indexResult = await new Promise<{
     starts: Float64Array;
     ends: Float64Array;
@@ -53,33 +86,66 @@ export async function readJsonl(
     worker.postMessage(message);
   });
 
-  // Request grouping + unparseable detection
-  const groupResult = await new Promise<{
-    groups: Uint32Array;
-    groupCount: number;
-    unparseable: Uint32Array;
-  }>((resolve, reject) => {
-    worker.onmessage = (e: MessageEvent<IndexerResponse>) => {
-      const msg = e.data;
-      if (msg.type === 'grouped') {
-        resolve(msg);
-        worker.terminate();
+  // Determine format: use provided or detect
+  let format: RecordFormat;
+  if (options.format) {
+    format = options.format;
+  } else {
+    // Sample first K parseable records for detection
+    const samples: unknown[] = [];
+    const limit = Math.min(SAMPLE_SIZE, indexResult.lineCount);
+
+    for (let i = 0; i < indexResult.lineCount && samples.length < limit; i++) {
+      try {
+        const text = await readLineText(
+          file,
+          indexResult.starts[i],
+          indexResult.ends[i],
+          i,
+          indexResult.hasBom
+        );
+        const parsed = JSON.parse(text);
+        samples.push(parsed);
+      } catch {
+        // Skip unparseable lines
       }
-    };
-    worker.onerror = (e) => reject(new Error(e.message));
+    }
 
-    const message: IndexerMessage = {
-      type: 'group',
-      blob: file,
-      starts: indexResult.starts,
-      ends: indexResult.ends,
-      hasBom: indexResult.hasBom,
-      promptPath: '', // Shape detection not yet available (WP 5)
-    };
-    // Don't transfer starts/ends - we need them for the FileIndex.
-    worker.postMessage(message);
-  });
+    const result = detectFormat(samples);
+    format = result.format;
+  }
 
+  // Helper to run grouping pass
+  async function runGrouping(fmt: RecordFormat): Promise<GroupResult> {
+    return new Promise((resolve, reject) => {
+      worker.onmessage = (e: MessageEvent<IndexerResponse>) => {
+        const msg = e.data;
+        if (msg.type === 'grouped') {
+          resolve({
+            groups: msg.groups,
+            groupCount: msg.groupCount,
+            unparseable: msg.unparseable,
+          });
+        }
+      };
+      worker.onerror = (e) => reject(new Error(e.message));
+
+      const message: IndexerMessage = {
+        type: 'group',
+        blob: file,
+        starts: indexResult.starts,
+        ends: indexResult.ends,
+        hasBom: indexResult.hasBom,
+        format: fmt,
+      };
+      worker.postMessage(message);
+    });
+  }
+
+  // Second pass: grouping + unparseable detection
+  const groupResult = await runGrouping(format);
+
+  // Build mutable index (groups can be updated by regroup)
   const index: FileIndex = {
     fingerprint: fp,
     lineCount: indexResult.lineCount,
@@ -92,17 +158,11 @@ export async function readJsonl(
     unparseable: groupResult.unparseable,
   };
 
-  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
-
-  return {
+  const source: Extract<RecordSource, { kind: 'jsonl' }> = {
     kind: 'jsonl',
     index,
     async readText(i: number): Promise<string> {
-      const start = index.starts[i];
-      const end = index.ends[i];
-      const slice = file.slice(start, end);
-      const buffer = await slice.arrayBuffer();
-      return decoder.decode(buffer);
+      return readLineText(file, index.starts[i], index.ends[i], i, index.hasBom);
     },
     async readRaw(i: number): Promise<Blob> {
       const start = index.starts[i];
@@ -112,4 +172,21 @@ export async function readJsonl(
       return file.slice(start, end);
     },
   };
+
+  // Regroup closure - keeps worker alive
+  async function regroup(newFormat: RecordFormat): Promise<GroupResult> {
+    const result = await runGrouping(newFormat);
+    // Update index in place
+    index.groups = result.groups;
+    index.groupCount = result.groupCount;
+    index.unparseable = result.unparseable;
+    return result;
+  }
+
+  // Dispose function - terminates the worker
+  function dispose(): void {
+    worker.terminate();
+  }
+
+  return { source, format, regroup, dispose };
 }
