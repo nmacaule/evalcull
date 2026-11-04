@@ -11,6 +11,7 @@ type RecordSource =
       index: FileIndex;
       readText(i: number): Promise<string>;
       readRaw(i: number): Promise<Blob>;
+      readRawRange(from: number, to: number): Promise<Blob>;
     }
   | {
       kind: 'rows';
@@ -21,6 +22,8 @@ type RecordSource =
 ```
 
 JSONL is byte-indexed (byte-exact export possible). Everything else is row-materialised (re-serialised on export).
+
+`readRawRange(from, to)` returns the raw bytes of lines `from..to` inclusive, terminators included, as one Blob slice; line 0 keeps its BOM, as in `readRaw`. The exporter reads each run of unedited included lines with one call, so an export builds one Blob part per run rather than one per line (owner decision, 4 Nov 2026, WP 6c, D-006).
 
 ## Containers and export promises
 
@@ -66,6 +69,27 @@ JSONL is byte-indexed (byte-exact export possible). Everything else is row-mater
 
 Hash: FNV-1a 32-bit (lo) + djb2 32-bit (hi) for 64-bit composite.
 Collision probability: ~3e-8 at 1M distinct prompts.
+
+A format change from the mapping modal re-runs the second pass through the
+reader's `regroup()`, which recomputes `groups`, `groupCount`, `unparseable`
+and `candidates`.
+
+## Candidates per line (WP 6c)
+
+The second pass also records each line's candidate count for the format in
+`FileIndex.candidates: Uint16Array` (PRD v3.3 §3.3):
+
+| Line | Count |
+|------|-------|
+| Unparseable | 0 |
+| Row formats (flat, messages, unknown) | 1 |
+| candidates | Array length at `candidatesPath`; 0 when missing or not an array; capped at 65535 |
+| preference | 2 (k 0 = `chosenPath`, k 1 = `rejectedPath`) |
+
+A prompt is a group of lines. Its compare decisions live on the ref of the
+group's first line. Its candidates are the group's lines' own refs (`"i"`) for
+row formats, and `"i:k"` for each line i and each k below that line's count for
+in-record formats.
 
 ## Reader completion rule
 

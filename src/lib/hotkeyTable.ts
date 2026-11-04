@@ -34,7 +34,7 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
   {
     key: 'ArrowLeft',
     altKey: '1',
-    description: 'Prefer left candidate',
+    description: 'Prefer left candidate and go to the next pair',
     action: 'prefer',
     args: ['left'],
     modes: ['compare'],
@@ -43,7 +43,7 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
   {
     key: 'ArrowRight',
     altKey: '2',
-    description: 'Prefer right candidate',
+    description: 'Prefer right candidate and go to the next pair',
     action: 'prefer',
     args: ['right'],
     modes: ['compare'],
@@ -69,7 +69,7 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
   // Preference strength (compare mode only)
   {
     key: 'Shift+1',
-    description: 'Preference strength 1 (significantly better)',
+    description: 'Preference strength 1 (significantly better) for the pair just judged',
     action: 'setStrength',
     args: [1],
     modes: ['compare'],
@@ -77,7 +77,7 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
   },
   {
     key: 'Shift+2',
-    description: 'Preference strength 2 (better)',
+    description: 'Preference strength 2 (better) for the pair just judged',
     action: 'setStrength',
     args: [2],
     modes: ['compare'],
@@ -85,7 +85,7 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
   },
   {
     key: 'Shift+3',
-    description: 'Preference strength 3 (slightly better)',
+    description: 'Preference strength 3 (slightly better) for the pair just judged',
     action: 'setStrength',
     args: [3],
     modes: ['compare'],

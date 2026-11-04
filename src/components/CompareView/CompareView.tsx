@@ -1,11 +1,14 @@
 /**
  * Container for compare mode: shows two candidates side-by-side.
  * WP 6a: Handles Tab focus between left and right candidates.
+ * WP 6c: Knockout over N candidates — "Pair k+1 of N−1", the "current best"
+ * badge on the incumbent, and the judged preference once the prompt is complete.
  */
 
-import type { CandidateRef, RecordFormat } from '../../types';
+import type { CandidateRef, Preference, RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import type { EditValue } from '../../store/types';
+import type { KnockoutState } from '../../lib/knockout';
 import { ReviewCard } from '../ReviewCard';
 
 export interface CompareViewProps {
@@ -25,10 +28,19 @@ export interface CompareViewProps {
   format: RecordFormat;
   showRaw: boolean;
   showWhitespace: boolean;
-  /** Total candidates in group (for "N more" message) */
-  groupSize: number;
+  /** Knockout state of the prompt (deriveKnockout) */
+  knockout: KnockoutState;
+  /** N, the number of candidates of the prompt */
+  candidateCount: number;
   onEdit?: (ref: CandidateRef, path: string) => void;
 }
+
+const JUDGED_LABEL: Record<Preference, string> = {
+  left: 'Judged: left preferred',
+  right: 'Judged: right preferred',
+  tie: 'Judged: tie',
+  both_bad: 'Judged: both unacceptable',
+};
 
 export function CompareView({
   leftRecord,
@@ -43,13 +55,22 @@ export function CompareView({
   format,
   showRaw,
   showWhitespace,
-  groupSize,
+  knockout,
+  candidateCount,
   onEdit,
 }: CompareViewProps) {
-  const extraCandidates = groupSize - 2;
+  const incumbentSide = knockout.incumbent?.side;
+  const judged = knockout.complete ? knockout.shown?.judged : undefined;
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Pair counter, only for prompts with more than two candidates */}
+      {candidateCount > 2 && knockout.shown && (
+        <div className="text-center text-sm text-muted-foreground">
+          Pair {knockout.shown.pair + 1} of {knockout.totalPairs}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4">
         {/* Left candidate */}
         <ReviewCard
@@ -62,6 +83,7 @@ export function CompareView({
           showWhitespace={showWhitespace}
           edits={leftEdits}
           onEdit={onEdit ? (path) => onEdit(leftRef, path) : undefined}
+          badge={incumbentSide === 'left' ? 'current best' : undefined}
         />
 
         {/* Right candidate */}
@@ -75,14 +97,14 @@ export function CompareView({
           showWhitespace={showWhitespace}
           edits={rightEdits}
           onEdit={onEdit ? (path) => onEdit(rightRef, path) : undefined}
+          badge={incumbentSide === 'right' ? 'current best' : undefined}
         />
       </div>
 
-      {/* Show message if there are more candidates in this group */}
-      {extraCandidates > 0 && (
+      {/* A completed prompt shows its last judged pair with the preference marked */}
+      {judged && (
         <div className="text-center text-sm text-muted-foreground">
-          {extraCandidates} more candidate{extraCandidates > 1 ? 's' : ''} in
-          this group
+          {JUDGED_LABEL[judged]}
         </div>
       )}
     </div>

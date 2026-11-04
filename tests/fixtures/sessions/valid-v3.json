@@ -1,0 +1,93 @@
+{
+  "version": 3,
+  "fingerprint": "abc123",
+  "sourceName": "test.jsonl",
+  "sourceKind": "jsonl",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "updatedAt": 1730505600000,
+      "compare": [
+        {
+          "left": "0:0",
+          "right": "0:1",
+          "preference": "right"
+        },
+        {
+          "left": "0:2",
+          "right": "0:1",
+          "preference": "left",
+          "strength": 2
+        }
+      ]
+    },
+    "1": {
+      "status": "kept",
+      "updatedAt": 1730505601000
+    },
+    "1:0": {
+      "status": "kept",
+      "updatedAt": 1730505602000,
+      "edits": {
+        "candidates[0]": "edited value"
+      }
+    }
+  },
+  "cursor": 1,
+  "history": [
+    {
+      "type": "compare",
+      "ref": "0",
+      "pair": 0,
+      "after": {
+        "left": "0:0",
+        "right": "0:1",
+        "preference": "right"
+      }
+    },
+    {
+      "type": "compare",
+      "ref": "0",
+      "pair": 1,
+      "after": {
+        "left": "0:2",
+        "right": "0:1",
+        "preference": "left"
+      }
+    },
+    {
+      "type": "compare",
+      "ref": "0",
+      "pair": 1,
+      "before": {
+        "left": "0:2",
+        "right": "0:1",
+        "preference": "left"
+      },
+      "after": {
+        "left": "0:2",
+        "right": "0:1",
+        "preference": "left",
+        "strength": 2
+      }
+    },
+    {
+      "type": "status",
+      "ref": "1",
+      "before": "unreviewed",
+      "after": "kept"
+    },
+    {
+      "type": "edit",
+      "ref": "1:0",
+      "path": "candidates[0]",
+      "after": "edited value"
+    }
+  ],
+  "savedAt": 1730505610000
+}

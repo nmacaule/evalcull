@@ -1,8 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildExport } from '../src/export/buildExport';
 import { computeExportStats } from '../src/export/stats';
 import { exportRows } from '../src/export/exportRows';
+import { exportLines } from '../src/export/exportLines';
 import type {
   RecordSource,
   RecordFormat,
@@ -37,6 +40,7 @@ function createMockJsonlSource(
     groups: Uint32Array.from(records.map((_, i) => i)),
     groupCount: records.length,
     unparseable: Uint32Array.from(unparseable),
+    candidates: new Uint16Array(records.length).fill(1),
   };
 
   return {
@@ -48,6 +52,9 @@ function createMockJsonlSource(
     async readRaw(i: number): Promise<Blob> {
       const text = JSON.stringify(records[i]) + '\n';
       return new Blob([text]);
+    },
+    async readRawRange(from: number, to: number): Promise<Blob> {
+      return new Blob(records.slice(from, to + 1).map((r) => JSON.stringify(r) + '\n'));
     },
   };
 }
@@ -209,17 +216,17 @@ describe('buildExport dispatch (WP 4)', () => {
     const decisions = new Map<CandidateRef, Decision>();
     decisions.set('0', {
       status: 'unreviewed',
-      compare: { left: '0:0', right: '0:1', preference: 'left' },
+      compare: [{ left: '0:0', right: '0:1', preference: 'left' }],
       updatedAt: Date.now(),
     });
     decisions.set('1', {
       status: 'unreviewed',
-      compare: { left: '1:0', right: '1:1', preference: 'tie' },
+      compare: [{ left: '1:0', right: '1:1', preference: 'tie' }],
       updatedAt: Date.now(),
     });
     decisions.set('2', {
       status: 'unreviewed',
-      compare: { left: '2:0', right: '2:1', preference: 'both_bad' },
+      compare: [{ left: '2:0', right: '2:1', preference: 'both_bad' }],
       updatedAt: Date.now(),
     });
 
@@ -233,6 +240,65 @@ describe('buildExport dispatch (WP 4)', () => {
     expect(result.stats.pairsCount).toBe(1);
     expect(result.stats.tiesExcluded).toBe(1);
     expect(result.stats.bothBadExcluded).toBe(1);
+  });
+});
+
+describe("exportLines reads unedited lines by run (D-006)", () => {
+  it('exports 10,000 unedited lines with one edit in the middle in exactly 2 raw reads', async () => {
+    const records = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
+    const base = createMockJsonlSource(records);
+    let rawReads = 0;
+    const src = {
+      ...base,
+      readRaw: async (i: number) => {
+        rawReads++;
+        return base.readRaw(i);
+      },
+      readRawRange: async (from: number, to: number) => {
+        rawReads++;
+        return new Blob(records.slice(from, to + 1).map((r) => JSON.stringify(r) + '\n'));
+      },
+    };
+    const decisions = new Map<CandidateRef, Decision>([
+      ['5000', { status: 'unreviewed', edits: { id: 'edited' }, updatedAt: 1 }],
+    ]);
+
+    const blob = await exportLines(src, decisions, () => true, { bom: 'keep' });
+
+    // Lines 0..4999 and 5001..9999 are one read each; line 5000 is re-serialised from readText
+    expect(rawReads).toBe(2);
+    const lines = (await blobToString(blob)).split('\n');
+    expect(lines.length).toBe(10001);
+    expect(lines[4999]).toBe('{"id":4999}');
+    expect(lines[5000]).toBe('{"id":"edited"}');
+    expect(lines[5001]).toBe('{"id":5001}');
+    expect(lines[10000]).toBe('');
+  });
+});
+
+describe("exportLines yields to the event loop (D-008)", () => {
+  it('lets a timer scheduled before a 5,001-line kept.jsonl export run before the export resolves', async () => {
+    const records = Array.from({ length: 5001 }, (_, i) => ({ id: i }));
+    const src = createMockJsonlSource(records);
+    const decisions = new Map<CandidateRef, Decision>();
+    for (let i = 0; i < records.length; i++) {
+      decisions.set(String(i), { status: 'kept', updatedAt: 1 });
+    }
+
+    // Only a macrotask yield inside the export lets this run before it resolves
+    let timerRan = false;
+    setTimeout(() => {
+      timerRan = true;
+    }, 0);
+
+    const result = await buildExport('kept.jsonl', {
+      source: src,
+      decisions,
+      format: { kind: 'unknown' },
+      record: createRecordFn(records),
+    });
+    expect(result.stats.lineCount).toBe(5001);
+    expect(timerRan).toBe(true);
   });
 });
 
@@ -342,6 +408,57 @@ describe('exportRows (WP 4)', () => {
   });
 });
 
+describe('all.decisions.jsonl per-candidate triage (D-011)', () => {
+  it('exports a status, labels and score on in-record candidate "0:1" under _triage.candidates["1"] of line 0', async () => {
+    const records = [
+      { prompt: 'P', responses: ['a', 'b'] },
+      { prompt: 'Q', responses: ['c', 'd'] },
+    ];
+    const source = createMockJsonlSource(records);
+    source.index.candidates = Uint16Array.from([2, 2]);
+    const decisions = new Map<CandidateRef, Decision>([
+      ['0:1', { status: 'kept', labels: ['good'], score: 5, updatedAt: 7 }],
+    ]);
+
+    const result = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions,
+      format: { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'responses' },
+      record: createRecordFn(records),
+    });
+
+    expect(await blobToString(result.blob)).toBe(
+      '{"prompt":"P","responses":["a","b"],"_triage":{"status":"unreviewed","edited":false,"updatedAt":0,' +
+        '"candidates":{"1":{"status":"kept","labels":["good"],"score":5,"edited":false,"updatedAt":7}}}}\n' +
+        '{"prompt":"Q","responses":["c","d"],"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n'
+    );
+  });
+});
+
+describe('all.decisions.jsonl candidate values (D-012)', () => {
+  it('writes only status, labels, score, notes, edited and updatedAt for a candidate entry that carries a compare', async () => {
+    const records = [{ prompt: 'P', responses: ['a', 'b'] }];
+    const source = createMockJsonlSource(records);
+    source.index.candidates = Uint16Array.from([2]);
+    // A candidate entry never gets a compare from the UI; a hand-edited or imported session can carry one
+    const decisions = new Map<CandidateRef, Decision>([
+      ['0:1', { status: 'kept', compare: [{ left: '0:0', right: '0:1', preference: 'left' }], updatedAt: 7 }],
+    ]);
+
+    const result = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions,
+      format: { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'responses' },
+      record: createRecordFn(records),
+    });
+
+    expect(await blobToString(result.blob)).toBe(
+      '{"prompt":"P","responses":["a","b"],"_triage":{"status":"unreviewed","edited":false,"updatedAt":0,' +
+        '"candidates":{"1":{"status":"kept","edited":false,"updatedAt":7}}}}\n'
+    );
+  });
+});
+
 describe('all.decisions.jsonl _triage shape (WP 4)', () => {
   it('_triage has correct field order and shape', async () => {
     const records = [{ id: 1, value: 9007199254740993 }];
@@ -351,7 +468,7 @@ describe('all.decisions.jsonl _triage shape (WP 4)', () => {
     const decisions = new Map<CandidateRef, Decision>();
     decisions.set('0', {
       status: 'kept',
-      compare: { left: '0:0', right: '0:1', preference: 'left', strength: 3 },
+      compare: [{ left: '0:0', right: '0:1', preference: 'left', strength: 3 }],
       labels: ['good'],
       score: 5,
       notes: 'test note',
@@ -371,7 +488,7 @@ describe('all.decisions.jsonl _triage shape (WP 4)', () => {
 
     expect(line._triage).toBeDefined();
     expect(line._triage.status).toBe('kept');
-    expect(line._triage.compare).toEqual({ left: '0:0', right: '0:1', preference: 'left', strength: 3 });
+    expect(line._triage.compare).toEqual([{ left: '0:0', right: '0:1', preference: 'left', strength: 3 }]);
     expect(line._triage.labels).toEqual(['good']);
     expect(line._triage.score).toBe(5);
     expect(line._triage.notes).toBe('test note');
@@ -394,6 +511,7 @@ describe('all.decisions.jsonl _triage shape (WP 4)', () => {
       groups: Uint32Array.from([0]),
       groupCount: 1,
       unparseable: Uint32Array.from([]),
+      candidates: new Uint16Array(1).fill(1),
     };
 
     const source: Extract<RecordSource, { kind: 'jsonl' }> = {
@@ -404,6 +522,9 @@ describe('all.decisions.jsonl _triage shape (WP 4)', () => {
       },
       async readRaw(): Promise<Blob> {
         return new Blob([literalLine + '\n']);
+      },
+      async readRawRange(from: number, to: number): Promise<Blob> {
+        return new Blob(Array.from({ length: to - from + 1 }, () => literalLine + '\n'));
       },
     };
 
@@ -433,4 +554,50 @@ describe('all.decisions.jsonl _triage shape (WP 4)', () => {
     expect(content).toContain('1e3');
     expect(content).toContain('-0');
   });
+});
+
+describe('pairs.jsonl per judged pair (WP 6c)', () => {
+  interface KnockoutFixture {
+    format: RecordFormat;
+    records: unknown[];
+    decisions: Record<CandidateRef, Decision>;
+    expectedPairs: unknown[];
+    expectedExcluded: { ties: number; bothBad: number };
+  }
+
+  function loadFixture(name: string): KnockoutFixture {
+    return JSON.parse(
+      readFileSync(join(import.meta.dirname, 'fixtures', 'pairs', `${name}.json`), 'utf-8')
+    );
+  }
+
+  // Oracle: each fixture's hand-written expectedPairs and expectedExcluded
+  it.each(['knockout-four-candidates', 'knockout-tie-middle', 'rows-sharing-prompt'])(
+    '%s: one row per left/right pair, in judgement order',
+    async (name) => {
+      const fixture = loadFixture(name);
+      const source = createMockJsonlSource(fixture.records);
+      const decisions = new Map(Object.entries(fixture.decisions));
+
+      const result = await buildExport('pairs.jsonl', {
+        source,
+        decisions,
+        format: fixture.format,
+        record: createRecordFn(fixture.records),
+      });
+
+      const rows = (await blobToString(result.blob))
+        .split('\n')
+        .filter((l) => l.length > 0)
+        .map((l) => JSON.parse(l));
+      expect(rows).toEqual(fixture.expectedPairs);
+      expect(result.stats.tiesExcluded).toBe(fixture.expectedExcluded.ties);
+      expect(result.stats.bothBadExcluded).toBe(fixture.expectedExcluded.bothBad);
+
+      const preview = computeExportStats('pairs.jsonl', source, decisions, fixture.format, {});
+      expect(preview.pairsCount).toBe(fixture.expectedPairs.length);
+      expect(preview.tiesExcluded).toBe(fixture.expectedExcluded.ties);
+      expect(preview.bothBadExcluded).toBe(fixture.expectedExcluded.bothBad);
+    }
+  );
 });

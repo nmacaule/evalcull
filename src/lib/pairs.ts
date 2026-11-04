@@ -97,11 +97,11 @@ export function buildPairs(
   let implicitPromptCount = 0;
   let skippedUnparseable = 0;
 
-  // Collect refs with compare decisions, sorted by line index
+  // Collect prompt entries with compare decisions, sorted by line index
   const compareRefs: Array<{ ref: CandidateRef; lineIdx: number; decision: Decision }> = [];
 
   for (const [ref, decision] of decisions) {
-    if (decision.compare) {
+    if (decision.compare?.length) {
       compareRefs.push({ ref, lineIdx: parseRefLine(ref), decision });
     }
   }
@@ -109,39 +109,50 @@ export function buildPairs(
   // Sort by line index for ascending order output
   compareRefs.sort((a, b) => a.lineIdx - b.lineIdx);
 
-  // Process compare decisions
+  /** A parsed record for line i, or undefined when unparseable or missing. */
+  const recordAt = (i: number): unknown =>
+    isUnparseable && isUnparseable(i) ? undefined : getRecord(i);
+
+  // One row per judged pair, in judgement order within a prompt (v3.3)
   for (const { lineIdx, decision } of compareRefs) {
-    const compare = decision.compare!;
-
-    // Skip ties and both_bad
-    if (compare.preference === 'tie') {
-      excludedTies++;
-      continue;
-    }
-    if (compare.preference === 'both_bad') {
-      excludedBothBad++;
-      continue;
-    }
-
-    // Check if record is unparseable
-    if (isUnparseable && isUnparseable(lineIdx)) {
-      skippedUnparseable++;
-      continue;
-    }
-
-    const record = getRecord(lineIdx);
-    if (record === undefined) {
-      skippedUnparseable++;
-      continue;
-    }
-
-    // Build pair based on format
-    const pair = buildPairFromCompare(record, compare, format);
-    if (pair) {
-      if ('prompt' in pair === false) {
-        implicitPromptCount++;
+    for (const compare of decision.compare!) {
+      // Skip ties and both_bad
+      if (compare.preference === 'tie') {
+        excludedTies++;
+        continue;
       }
-      pairs.push(pair);
+      if (compare.preference === 'both_bad') {
+        excludedBothBad++;
+        continue;
+      }
+
+      // The prompt comes from the prompt entry's line; each candidate from its own ref
+      const promptRecord = recordAt(lineIdx);
+      const chosenRef = compare.preference === 'left' ? compare.left : compare.right;
+      const rejectedRef = compare.preference === 'left' ? compare.right : compare.left;
+      const chosenRecord = recordAt(parseRefLine(chosenRef));
+      const rejectedRecord = recordAt(parseRefLine(rejectedRef));
+      if (
+        promptRecord === undefined ||
+        chosenRecord === undefined ||
+        rejectedRecord === undefined
+      ) {
+        skippedUnparseable++;
+        continue;
+      }
+
+      const pair = buildPairFromCompare(
+        promptRecord,
+        { ref: chosenRef, record: chosenRecord },
+        { ref: rejectedRef, record: rejectedRecord },
+        format
+      );
+      if (pair) {
+        if ('prompt' in pair === false) {
+          implicitPromptCount++;
+        }
+        pairs.push(pair);
+      }
     }
   }
 
@@ -184,113 +195,126 @@ export function buildPairs(
   };
 }
 
+/** Index of the last assistant turn of a messages array, or −1. */
+function lastAssistantIndex(
+  messages: unknown[],
+  format: Extract<RecordFormat, { kind: 'messages' }>
+): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i] as Record<string, unknown>;
+    const role = String(msg[format.roleKey] ?? '');
+    if (format.roles.assistant.includes(role)) return i;
+  }
+  return -1;
+}
+
+/** Candidate index k of an in-record ref "i:k", or −1 for a line ref. */
+function candidateIndex(ref: CandidateRef): number {
+  const colon = ref.indexOf(':');
+  return colon === -1 ? -1 : parseInt(ref.slice(colon + 1), 10);
+}
+
 /**
- * Build a TRL pair from a compare decision.
+ * The text a candidate ref names, read from that candidate's own record:
+ * a line ref's response (flat) or last assistant turn (messages); an "i:k"
+ * ref's candidatesPath[k], or chosen (k 0) / rejected (k 1) for preference.
+ */
+function candidateValue(
+  ref: CandidateRef,
+  record: unknown,
+  format: RecordFormat
+): { ok: true; value: unknown } | { ok: false } {
+  switch (format.kind) {
+    case 'flat': {
+      const value = getPath(record, format.responsePath);
+      return typeof value === 'string' ? { ok: true, value } : { ok: false };
+    }
+    case 'messages': {
+      const messages = getPath(record, format.path);
+      if (!Array.isArray(messages)) return { ok: false };
+      const idx = lastAssistantIndex(messages, format);
+      if (idx < 0) return { ok: false };
+      return {
+        ok: true,
+        value: [normaliseMessage(messages[idx] as Record<string, unknown>, format)],
+      };
+    }
+    case 'candidates': {
+      const candidates = getPath(record, format.candidatesPath);
+      const k = candidateIndex(ref);
+      if (!Array.isArray(candidates) || k < 0 || k >= candidates.length) return { ok: false };
+      return { ok: true, value: candidates[k] };
+    }
+    case 'preference': {
+      const k = candidateIndex(ref);
+      if (k === 0) return { ok: true, value: getPath(record, format.chosenPath) };
+      if (k === 1) return { ok: true, value: getPath(record, format.rejectedPath) };
+      return { ok: false };
+    }
+    default:
+      return { ok: false };
+  }
+}
+
+/**
+ * Build a TRL pair from one compare element (v3.3). The prompt comes from the
+ * prompt entry's record; chosen and rejected from each candidate's own record.
  */
 function buildPairFromCompare(
-  record: unknown,
-  compare: NonNullable<Decision['compare']>,
+  promptRecord: unknown,
+  chosen: { ref: CandidateRef; record: unknown },
+  rejected: { ref: CandidateRef; record: unknown },
   format: RecordFormat
 ): TrlPair | null {
-  const isLeft = compare.preference === 'left';
+  const chosenVal = candidateValue(chosen.ref, chosen.record, format);
+  const rejectedVal = candidateValue(rejected.ref, rejected.record, format);
+  if (!chosenVal.ok || !rejectedVal.ok) return null;
 
   switch (format.kind) {
     case 'messages': {
-      // Candidate is last assistant turn, prompt is everything before
-      const messages = getPath(record, format.path) as unknown[] | undefined;
-      if (!Array.isArray(messages) || messages.length === 0) return null;
-
-      // Find last assistant turn
-      let lastAssistantIdx = -1;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i] as Record<string, unknown>;
-        const role = String(msg[format.roleKey] ?? '');
-        if (format.roles.assistant.includes(role)) {
-          lastAssistantIdx = i;
-          break;
-        }
-      }
-
-      if (lastAssistantIdx < 0) return null;
-
-      // Normalise all messages
-      const normalised = messages.map((m) =>
-        normaliseMessage(m as Record<string, unknown>, format)
-      );
-
-      const prompt = normalised.slice(0, lastAssistantIdx);
-      const chosen = [normalised[lastAssistantIdx]];
-      const rejected = [normalised[lastAssistantIdx]]; // same for compare without edit
-
-      // For compare, we don't have different chosen/rejected from edits
-      // The preference indicates which candidate is better
-      // But in messages format with single record, we need two candidates
-      // This case applies when comparing multiple records with same prompt (WP 5 grouping)
-      // For now, return conversational pair with same chosen/rejected (placeholder)
+      // Prompt is every turn before the prompt line's last assistant turn
+      const messages = getPath(promptRecord, format.path);
+      if (!Array.isArray(messages)) return null;
+      const idx = lastAssistantIndex(messages, format);
+      if (idx < 0) return null;
+      const prompt = messages
+        .slice(0, idx)
+        .map((m) => normaliseMessage(m as Record<string, unknown>, format));
       return {
         prompt,
-        chosen: isLeft ? chosen : rejected,
-        rejected: isLeft ? rejected : chosen,
+        chosen: chosenVal.value as unknown[],
+        rejected: rejectedVal.value as unknown[],
       } as TrlPairConversational;
     }
 
-    case 'flat': {
-      const promptVal = getPath(record, format.promptPath);
-      const responseVal = getPath(record, format.responsePath);
-
-      if (typeof promptVal === 'string' && typeof responseVal === 'string') {
-        return {
-          prompt: promptVal,
-          chosen: isLeft ? responseVal : responseVal,
-          rejected: isLeft ? responseVal : responseVal,
-        } as TrlPairStandard;
-      }
-      return null;
+    case 'flat':
+    case 'candidates': {
+      const promptVal = getPath(promptRecord, format.promptPath);
+      if (typeof promptVal !== 'string') return null;
+      return {
+        prompt: promptVal,
+        chosen: chosenVal.value,
+        rejected: rejectedVal.value,
+      } as TrlPairStandard;
     }
 
     case 'preference': {
-      const chosenVal = getPath(record, format.chosenPath);
-      const rejectedVal = getPath(record, format.rejectedPath);
-
       if (format.promptPath) {
-        const promptVal = getPath(record, format.promptPath);
+        const promptVal = getPath(promptRecord, format.promptPath);
         if (typeof promptVal === 'string') {
           return {
             prompt: promptVal,
-            chosen: isLeft ? chosenVal : rejectedVal,
-            rejected: isLeft ? rejectedVal : chosenVal,
+            chosen: chosenVal.value,
+            rejected: rejectedVal.value,
           } as TrlPairStandard;
         }
       }
 
       // Implicit prompt (no promptPath)
       return {
-        chosen: isLeft ? chosenVal : rejectedVal,
-        rejected: isLeft ? rejectedVal : chosenVal,
+        chosen: chosenVal.value,
+        rejected: rejectedVal.value,
       } as TrlPairImplicit;
-    }
-
-    case 'candidates': {
-      const promptVal = getPath(record, format.promptPath);
-      const candidates = getPath(record, format.candidatesPath) as unknown[] | undefined;
-
-      if (!Array.isArray(candidates) || candidates.length < 2) return null;
-
-      // Parse candidate indices from refs
-      const leftIdx = parseInt(compare.left.split(':')[1] ?? '0', 10);
-      const rightIdx = parseInt(compare.right.split(':')[1] ?? '1', 10);
-
-      const chosenIdx = isLeft ? leftIdx : rightIdx;
-      const rejectedIdx = isLeft ? rightIdx : leftIdx;
-
-      if (typeof promptVal === 'string') {
-        return {
-          prompt: promptVal,
-          chosen: candidates[chosenIdx],
-          rejected: candidates[rejectedIdx],
-        } as TrlPairStandard;
-      }
-      return null;
     }
 
     default:

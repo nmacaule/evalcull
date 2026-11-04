@@ -189,9 +189,80 @@ function isValidStrength(s: unknown): s is 1 | 2 | 3 | undefined {
   return s === undefined || s === 1 || s === 2 || s === 3;
 }
 
+/**
+ * Validate one decision's compare element (v2: the object; v3: each array element).
+ * `where` names it in the reason, e.g. "0" or "0 compare[1]".
+ */
+function parseCompareDecision(
+  value: unknown,
+  where: string
+): { ok: true; compare: CompareDecision } | { ok: false; reason: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, reason: `Invalid compare in ${where}` };
+  }
+  const c = value as Record<string, unknown>;
+  if (typeof c.left !== 'string' || !isValidRef(c.left)) {
+    return { ok: false, reason: `Invalid compare.left in ${where}` };
+  }
+  if (typeof c.right !== 'string' || !isValidRef(c.right)) {
+    return { ok: false, reason: `Invalid compare.right in ${where}` };
+  }
+  if (!isValidPreference(c.preference)) {
+    return { ok: false, reason: `Invalid compare.preference in ${where}` };
+  }
+  let strength: 1 | 2 | 3 | undefined;
+  try {
+    const rawStrength = toNumberOrUndefined(c.strength);
+    if (!isValidStrength(rawStrength)) {
+      return { ok: false, reason: `Invalid compare.strength in ${where}` };
+    }
+    strength = rawStrength;
+  } catch {
+    return { ok: false, reason: `Invalid compare.strength in ${where}` };
+  }
+  return {
+    ok: true,
+    compare: {
+      left: c.left as CandidateRef,
+      right: c.right as CandidateRef,
+      preference: c.preference as Preference,
+      strength,
+    },
+  };
+}
+
+// Version-2 session shape (before PRD v3.3): one compare object, no history pair index.
+type DecisionV2 = Omit<Decision, 'compare'> & { compare?: CompareDecision };
+type HistoryActionV2 =
+  | Exclude<HistoryAction, { type: 'compare' }>
+  | { type: 'compare'; ref: CandidateRef; before?: CompareDecision; after?: CompareDecision };
+interface SessionStateV2 extends Omit<SessionState, 'version' | 'decisions' | 'history'> {
+  version: 2;
+  decisions: Record<CandidateRef, DecisionV2>;
+  history: HistoryActionV2[];
+}
+
+/**
+ * v2 → v3: each compare object becomes a one-element array; each history compare
+ * action gains pair: 0. Shape only: refs are not remapped.
+ */
+function migrateSessionV2(v2: SessionStateV2): SessionState {
+  const decisions: Record<CandidateRef, Decision> = {};
+  for (const [ref, d] of Object.entries(v2.decisions)) {
+    const { compare, ...rest } = d;
+    decisions[ref] = compare ? { ...rest, compare: [compare] } : rest;
+  }
+  const history: HistoryAction[] = v2.history.map((h) =>
+    h.type === 'compare' ? { ...h, pair: 0 } : h
+  );
+  return { ...v2, version: 3, decisions, history };
+}
+
 export function parseSessionText(
   text: string
-): { ok: true; session: SessionState } | { ok: false; reason: string } {
+):
+  | { ok: true; session: SessionState; migrated: boolean }
+  | { ok: false; reason: string } {
   let raw: Record<string, unknown>;
   try {
     raw = losslessParse(text) as Record<string, unknown>;
@@ -199,14 +270,14 @@ export function parseSessionText(
     return { ok: false, reason: `JSON parse error: ${err}` };
   }
 
-  // Version check
+  // Version check: 3 is current; 2 is migrated (PRD v3.3); anything else is refused
   let version: number;
   try {
     version = toNumber(raw.version);
   } catch {
     return { ok: false, reason: 'Invalid version field' };
   }
-  if (version !== 2) {
+  if (version !== 2 && version !== 3) {
     return { ok: false, reason: `Unknown version: ${version}` };
   }
 
@@ -239,7 +310,7 @@ export function parseSessionText(
     return { ok: false, reason: 'Missing or invalid decisions' };
   }
 
-  const decisions: Record<CandidateRef, Decision> = {};
+  const decisions: Record<CandidateRef, DecisionV2 | Decision> = {};
   for (const [ref, d] of Object.entries(rawDecisions)) {
     if (!isValidRef(ref)) {
       return { ok: false, reason: `Invalid decision ref: ${ref}` };
@@ -258,7 +329,7 @@ export function parseSessionText(
       return { ok: false, reason: `Invalid numeric field in decision ${ref}` };
     }
 
-    const decision: Decision = {
+    const base: Omit<Decision, 'compare'> = {
       status: dec.status as DecisionStatus,
       updatedAt,
       score,
@@ -267,38 +338,26 @@ export function parseSessionText(
       edits: dec.edits as Record<string, unknown> | undefined,
     };
 
-    // Validate compare if present
-    if (dec.compare !== undefined) {
-      const c = dec.compare as Record<string, unknown>;
-      if (typeof c.left !== 'string' || !isValidRef(c.left)) {
-        return { ok: false, reason: `Invalid compare.left in ${ref}` };
+    if (dec.compare === undefined) {
+      decisions[ref] = base;
+    } else if (version === 2) {
+      // v2: one compare object per prompt
+      const parsed = parseCompareDecision(dec.compare, ref);
+      if (!parsed.ok) return parsed;
+      decisions[ref] = { ...base, compare: parsed.compare };
+    } else {
+      // v3: one compare element per judged pair, never empty
+      if (!Array.isArray(dec.compare) || dec.compare.length === 0) {
+        return { ok: false, reason: `Invalid compare in ${ref}: expected a non-empty array` };
       }
-      if (typeof c.right !== 'string' || !isValidRef(c.right)) {
-        return { ok: false, reason: `Invalid compare.right in ${ref}` };
+      const compare: CompareDecision[] = [];
+      for (let j = 0; j < dec.compare.length; j++) {
+        const parsed = parseCompareDecision(dec.compare[j], `${ref} compare[${j}]`);
+        if (!parsed.ok) return parsed;
+        compare.push(parsed.compare);
       }
-      if (!isValidPreference(c.preference)) {
-        return { ok: false, reason: `Invalid compare.preference in ${ref}` };
-      }
-      let strength: 1 | 2 | 3 | undefined;
-      try {
-        const rawStrength = toNumberOrUndefined(c.strength);
-        if (!isValidStrength(rawStrength)) {
-          return { ok: false, reason: `Invalid compare.strength in ${ref}` };
-        }
-        strength = rawStrength;
-      } catch {
-        return { ok: false, reason: `Invalid compare.strength in ${ref}` };
-      }
-
-      decision.compare = {
-        left: c.left as CandidateRef,
-        right: c.right as CandidateRef,
-        preference: c.preference as Preference,
-        strength,
-      };
+      decisions[ref] = { ...base, compare };
     }
-
-    decisions[ref] = decision;
   }
 
   // Parse history with number conversion
@@ -307,7 +366,7 @@ export function parseSessionText(
     return { ok: false, reason: 'Missing or invalid history' };
   }
 
-  const history: HistoryAction[] = [];
+  const history: Array<HistoryActionV2 | HistoryAction> = [];
   for (let i = 0; i < rawHistory.length; i++) {
     const h = rawHistory[i] as Record<string, unknown>;
     const actionType = h.type as string;
@@ -380,12 +439,32 @@ export function parseSessionText(
         }
       }
 
-      history.push({
-        type: 'compare',
-        ref: h.ref as CandidateRef,
-        before: convertedBefore,
-        after: convertedAfter,
-      });
+      if (version === 2) {
+        history.push({
+          type: 'compare',
+          ref: h.ref as CandidateRef,
+          before: convertedBefore,
+          after: convertedAfter,
+        });
+      } else {
+        // v3: pair indexes into the prompt's compare[]
+        let pair: number;
+        try {
+          pair = toNumber(h.pair);
+        } catch {
+          return { ok: false, reason: `Invalid pair in history[${i}]` };
+        }
+        if (!Number.isInteger(pair) || pair < 0) {
+          return { ok: false, reason: `Invalid pair in history[${i}]` };
+        }
+        history.push({
+          type: 'compare',
+          ref: h.ref as CandidateRef,
+          pair,
+          before: convertedBefore,
+          after: convertedAfter,
+        });
+      }
     } else if (actionType === 'edit') {
       // before/after untouched - may contain LosslessNumber
       history.push({
@@ -430,19 +509,34 @@ export function parseSessionText(
     }
   }
 
+  const common = {
+    fingerprint: raw.fingerprint as string,
+    sourceName: raw.sourceName as string,
+    sourceKind: raw.sourceKind as 'jsonl' | 'rows',
+    format: raw.format as RecordFormat,
+    cursor,
+    savedAt,
+  };
+
+  if (version === 2) {
+    const v2: SessionStateV2 = {
+      ...common,
+      version: 2,
+      decisions: decisions as Record<CandidateRef, DecisionV2>,
+      history: history as HistoryActionV2[],
+    };
+    return { ok: true, session: migrateSessionV2(v2), migrated: true };
+  }
+
   return {
     ok: true,
     session: {
-      version: 2,
-      fingerprint: raw.fingerprint as string,
-      sourceName: raw.sourceName as string,
-      sourceKind: raw.sourceKind as 'jsonl' | 'rows',
-      format: raw.format as RecordFormat,
-      decisions,
-      cursor,
-      history,
-      savedAt,
+      ...common,
+      version: 3,
+      decisions: decisions as Record<CandidateRef, Decision>,
+      history: history as HistoryAction[],
     },
+    migrated: false,
   };
 }
 
@@ -496,7 +590,7 @@ export function serialiseSession(
   }
 
   const session: SessionState = {
-    version: 2,
+    version: 3,
     fingerprint: state.fingerprint,
     sourceName: state.sourceName,
     sourceKind: state.source.kind,
@@ -545,17 +639,54 @@ let pendingSaveTimeout: ReturnType<typeof setTimeout> | null = null;
 let saveInFlight: Promise<void> | null = null;
 let dirtyDuringWrite = false;
 let pendingCtx: SaveContext | null = null;
+// The options of the latest caller while a write is in flight, so a pagehide
+// follow-up keeps its keepalive (D-005 F)
+let pendingOpts: SaveOptions | undefined;
+
+export interface SaveOptions {
+  /** fetch keepalive for the sidecar PUT (pagehide) */
+  keepalive?: boolean;
+  /** Start the IndexedDB write before the sidecar PUT (page lifecycle flushes, D-005 B) */
+  idbFirst?: boolean;
+}
+
+// Told whenever "a save is pending or in flight" changes (D-005 G)
+let savePendingListener: ((pending: boolean) => void) | null = null;
+let lastNotifiedPending = false;
+
+export function onSavePendingChange(listener: ((pending: boolean) => void) | null): void {
+  savePendingListener = listener;
+}
+
+function notifySavePending(): void {
+  const pending = pendingSaveTimeout !== null || saveInFlight !== null;
+  if (pending === lastNotifiedPending) return;
+  lastNotifiedPending = pending;
+  savePendingListener?.(pending);
+}
 
 const DEBOUNCE_MS = 500;
+// A run of changes closer together than the debounce still saves this soon
+// after the first of them (WP 3 decision f, D-010)
+const MAX_WAIT_MS = 2000;
+// When the oldest change not yet handed to a save was made; null when none is pending
+let pendingSince: number | null = null;
 
-export function cancelPendingSaves(): void {
+function clearPendingSaves(): void {
   if (pendingSaveTimeout) {
     clearTimeout(pendingSaveTimeout);
     pendingSaveTimeout = null;
   }
+  pendingSince = null;
   // Clear pending follow-up but don't abort in-flight write
   dirtyDuringWrite = false;
   pendingCtx = null;
+  pendingOpts = undefined;
+}
+
+export function cancelPendingSaves(): void {
+  clearPendingSaves();
+  notifySavePending();
 }
 
 export function bumpSaveGeneration(): number {
@@ -583,7 +714,7 @@ export interface SaveContext {
  */
 async function executeSave(
   ctx: SaveContext,
-  opts?: { keepalive?: boolean }
+  opts?: SaveOptions
 ): Promise<void> {
   if (ctx.generation !== saveGeneration) return;
 
@@ -591,15 +722,18 @@ async function executeSave(
   const text = ctx.getText();
   const savedAt = Date.now();
 
+  // On page close the PUT may be cut off, so the local write starts first (D-005 B)
+  const idbFirst = opts?.idbFirst ? saveToIndexedDB(ctx.fingerprint, text) : null;
+
   // PUT to sidecar if configured (authoritative)
   let sidecarResult: { ok: true } | { ok: false; status: number; message: string } | null = null;
   if (sidecarTransport) {
-    sidecarResult = await sidecarTransport.put(text, opts);
+    sidecarResult = await sidecarTransport.put(text, { keepalive: opts?.keepalive });
     if (ctx.generation !== saveGeneration) return;
   }
 
   // Write to IndexedDB (best-effort)
-  const idbResult = await saveToIndexedDB(ctx.fingerprint, text);
+  const idbResult = await (idbFirst ?? saveToIndexedDB(ctx.fingerprint, text));
   if (ctx.generation !== saveGeneration) return;
 
   // Determine outcome: sidecar ok → saved, else IDB ok → saved,
@@ -621,11 +755,12 @@ async function executeSave(
  * Start or chain a save. Ensures one write in flight at a time.
  * If a write is in flight, marks dirty so a follow-up runs when it settles.
  */
-function startOrChainSave(ctx: SaveContext, opts?: { keepalive?: boolean }): void {
+function startOrChainSave(ctx: SaveContext, opts?: SaveOptions): void {
   if (saveInFlight) {
-    // Write in flight: mark dirty, store latest context
+    // Write in flight: mark dirty, store latest context and its options
     dirtyDuringWrite = true;
     pendingCtx = ctx;
+    pendingOpts = opts;
     return;
   }
 
@@ -636,29 +771,40 @@ function startOrChainSave(ctx: SaveContext, opts?: { keepalive?: boolean }): voi
     // Chain: if dirty during this write, run exactly one follow-up
     while (dirtyDuringWrite && pendingCtx) {
       const nextCtx = pendingCtx;
+      const nextOpts = pendingOpts;
       dirtyDuringWrite = false;
       pendingCtx = null;
-      await executeSave(nextCtx, opts);
+      pendingOpts = undefined;
+      await executeSave(nextCtx, nextOpts);
     }
 
     saveInFlight = null;
+    notifySavePending();
   })();
+  notifySavePending();
 }
 
 export function scheduleSave(ctx: SaveContext): void {
-  cancelPendingSaves();
+  const now = Date.now();
+  const since = pendingSince ?? now;
+  clearPendingSaves();
+  pendingSince = since;
 
+  // Debounce, but never later than MAX_WAIT_MS after the first pending change
+  const delay = Math.min(DEBOUNCE_MS, Math.max(0, since + MAX_WAIT_MS - now));
   pendingSaveTimeout = setTimeout(() => {
     pendingSaveTimeout = null;
+    pendingSince = null;
     startOrChainSave(ctx);
-  }, DEBOUNCE_MS);
+  }, delay);
+  notifySavePending();
 }
 
 export async function saveImmediate(
   ctx: SaveContext,
-  opts?: { keepalive?: boolean }
+  opts?: SaveOptions
 ): Promise<void> {
-  cancelPendingSaves();
+  clearPendingSaves();
   startOrChainSave(ctx, opts);
   // Wait for the chain to complete
   if (saveInFlight) {
@@ -673,6 +819,20 @@ export async function saveImmediate(
 export async function loadFromSidecar(): Promise<string | null> {
   if (!sidecarTransport) return null;
   return sidecarTransport.get();
+}
+
+/**
+ * The format of the session load() would restore for this fingerprint, so the
+ * reader can group for it once instead of detecting and then regrouping (D-004).
+ * Same source order as load(): the sidecar when configured, else IndexedDB.
+ * Null when there is none, or it would be refused.
+ */
+export async function loadStoredFormat(fingerprint: string): Promise<RecordFormat | null> {
+  const text = (hasSidecar() ? await loadFromSidecar() : null) ?? (await loadFromIndexedDB(fingerprint));
+  if (!text) return null;
+  const result = parseSessionText(text);
+  if (!result.ok || result.session.fingerprint !== fingerprint) return null;
+  return result.session.format;
 }
 
 // -----------------------------------------------------------------------------

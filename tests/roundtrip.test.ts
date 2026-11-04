@@ -111,6 +111,11 @@ function createJsonlSource(bytes: Buffer, idx: FileIndex): Extract<RecordSource,
       const slice = Uint8Array.from(bytes.subarray(start, end));
       return new Blob([slice]);
     },
+    async readRawRange(from: number, to: number): Promise<Blob> {
+      const start = idx.starts[from];
+      const end = idx.ends[to] + idx.eols[to];
+      return new Blob([Uint8Array.from(bytes.subarray(start, end))]);
+    },
   };
 }
 
@@ -262,6 +267,7 @@ describe('SHA-256 round-trip (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -301,6 +307,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -350,6 +357,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -387,6 +395,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -425,6 +434,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -451,6 +461,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -481,6 +492,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -513,6 +525,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -549,6 +562,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -583,6 +597,7 @@ describe('BOM options (WP 4: exporter)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -661,6 +676,7 @@ describe('edit then undo exports byte-identical (WP 4)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: new Uint32Array(0),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -787,6 +803,7 @@ describe('excludeUnparseable (WP 4)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: Uint32Array.from([1]), // line 1 is unparseable
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);
@@ -822,6 +839,7 @@ describe('excludeUnparseable (WP 4)', () => {
       groups: new Uint32Array(result.lineCount),
       groupCount: result.lineCount,
       unparseable: Uint32Array.from([1]),
+      candidates: new Uint16Array(result.lineCount).fill(1),
     };
 
     const source = createJsonlSource(bytes, idx);

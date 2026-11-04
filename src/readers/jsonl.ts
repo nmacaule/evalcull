@@ -18,6 +18,7 @@ export interface GroupResult {
   groups: Uint32Array;
   groupCount: number;
   unparseable: Uint32Array;
+  candidates: Uint16Array; // candidates per line for the format (WP 6c)
 }
 
 export interface JsonlReaderResult {
@@ -125,6 +126,7 @@ export async function readJsonl(
             groups: msg.groups,
             groupCount: msg.groupCount,
             unparseable: msg.unparseable,
+            candidates: msg.candidates,
           });
         }
       };
@@ -156,6 +158,7 @@ export async function readJsonl(
     groups: groupResult.groups,
     groupCount: groupResult.groupCount,
     unparseable: groupResult.unparseable,
+    candidates: groupResult.candidates,
   };
 
   const source: Extract<RecordSource, { kind: 'jsonl' }> = {
@@ -171,6 +174,10 @@ export async function readJsonl(
       const end = index.ends[i] + eol;
       return file.slice(start, end);
     },
+    async readRawRange(from: number, to: number): Promise<Blob> {
+      // One slice for a run of lines, terminators included (D-006)
+      return file.slice(index.starts[from], index.ends[to] + index.eols[to]);
+    },
   };
 
   // Regroup closure - keeps worker alive
@@ -180,6 +187,7 @@ export async function readJsonl(
     index.groups = result.groups;
     index.groupCount = result.groupCount;
     index.unparseable = result.unparseable;
+    index.candidates = result.candidates;
     return result;
   }
 

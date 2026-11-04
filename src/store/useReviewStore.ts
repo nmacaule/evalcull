@@ -3,15 +3,24 @@
  * Implements §3.5 ReviewState interface.
  *
  * WP 5: Added regroupHandle registry and setFormat action.
+ * WP 6c: Knockout over N candidates (compare[] per prompt), line refs, setStrength.
  */
 
 import { create } from 'zustand';
 import { losslessParse } from '../lib/lossless';
+import {
+  buildGroupLines,
+  deriveKnockout,
+  isInRecordFormat,
+  promptCandidates,
+  type GroupLines,
+} from '../lib/knockout';
 import type {
   RecordSource,
   RecordFormat,
   CandidateRef,
   Decision,
+  FileIndex,
   HistoryAction,
   DecisionStatus,
   Preference,
@@ -23,11 +32,7 @@ import type {
   SessionOutcome,
   EditValue,
 } from './types';
-import {
-  formatPromptRef,
-  formatCandidateRef,
-  parseRefLine,
-} from './refs';
+import { formatPromptRef, parseRefLine } from './refs';
 import { LRUCache } from './lru';
 import {
   parseSessionText,
@@ -40,6 +45,7 @@ import {
   getCurrentGeneration,
   scheduleSave,
   saveImmediate,
+  onSavePendingChange,
   cancelPendingSaves,
 } from './persistence';
 import type { GroupResult } from '../readers/jsonl';
@@ -92,6 +98,111 @@ export function clearRegroupHandle(fingerprint: string): void {
 }
 
 // -----------------------------------------------------------------------------
+// Module-private group sizes (WP 6c)
+// -----------------------------------------------------------------------------
+
+interface GroupSizes {
+  table: GroupLines;
+  /** n[g] = N, the number of candidates of group g. */
+  n: Uint32Array;
+  /** For N ≤ 1: the line of candidates[0]; −1 when N = 0. */
+  reviewLine: Int32Array;
+  /** What the entry was built for; rebuilt when either differs. */
+  candidates: Uint16Array;
+  inRecord: boolean;
+}
+
+/** Keyed by FileIndex.groups; a regroup replaces the array. */
+const groupSizesCache = new WeakMap<Uint32Array, GroupSizes>();
+
+/** N and the N ≤ 1 review line for every group, one O(lines) pass, cached. */
+function groupSizes(index: FileIndex, format: RecordFormat): GroupSizes {
+  const inRecord = isInRecordFormat(format);
+  const cached = groupSizesCache.get(index.groups);
+  if (
+    cached &&
+    cached.candidates === index.candidates &&
+    cached.inRecord === inRecord &&
+    cached.table.offsets.length === index.groupCount + 1
+  ) {
+    return cached;
+  }
+
+  const table = buildGroupLines(index.groups, index.groupCount);
+  const n = new Uint32Array(index.groupCount);
+  const reviewLine = new Int32Array(index.groupCount).fill(-1);
+  for (let g = 0; g < index.groupCount; g++) {
+    const start = table.offsets[g];
+    const end = table.offsets[g + 1];
+    if (!inRecord) {
+      n[g] = end - start;
+      if (end > start) reviewLine[g] = table.lines[start];
+      continue;
+    }
+    let count = 0;
+    for (let j = start; j < end; j++) {
+      const line = table.lines[j];
+      const c = index.candidates[line];
+      if (c > 0 && reviewLine[g] === -1) reviewLine[g] = line;
+      count += c;
+    }
+    n[g] = count;
+  }
+
+  const sizes: GroupSizes = { table, n, reviewLine, candidates: index.candidates, inRecord };
+  groupSizesCache.set(index.groups, sizes);
+  return sizes;
+}
+
+/** First line of group g; its ref holds the prompt's compare[]. */
+function firstLineOf(sizes: GroupSizes, g: number): number {
+  return sizes.table.lines[sizes.table.offsets[g]];
+}
+
+/** For N ≤ 1: the ref A/R/S act on, candidates[0] ?? promptRef. O(1). */
+function reviewRefOf(sizes: GroupSizes, g: number): CandidateRef {
+  const line = sizes.reviewLine[g];
+  if (line === -1) return String(firstLineOf(sizes, g));
+  return sizes.inRecord ? `${line}:0` : String(line);
+}
+
+/**
+ * Whether ref names one of its prompt's candidates (Q12): a line ref for row
+ * formats, "i:k" with k below line i's count for in-record formats, or the
+ * review ref of a prompt with no candidates. O(1).
+ */
+function isCandidateEntry(sizes: GroupSizes, groups: Uint32Array, ref: CandidateRef): boolean {
+  const line = parseRefLine(ref);
+  const g = groups[line];
+  if (sizes.n[g] === 0) return ref === reviewRefOf(sizes, g);
+  if (!sizes.inRecord) return ref === String(line);
+  const colon = ref.indexOf(':');
+  return colon !== -1 && Number(ref.slice(colon + 1)) < sizes.candidates[line];
+}
+
+/** Whether any candidate entry of prompt g satisfies test (Q12). O(N). */
+function someCandidate(
+  state: ReviewState,
+  sizes: GroupSizes,
+  g: number,
+  test: (d: Decision | undefined) => boolean
+): boolean {
+  if (sizes.n[g] === 0) return test(state.decisions.get(reviewRefOf(sizes, g)));
+  const { offsets, lines } = sizes.table;
+  for (let p = offsets[g]; p < offsets[g + 1]; p++) {
+    const line = lines[p];
+    if (!sizes.inRecord) {
+      if (test(state.decisions.get(String(line)))) return true;
+      continue;
+    }
+    for (let k = 0; k < sizes.candidates[line]; k++) {
+      if (test(state.decisions.get(`${line}:${k}`))) return true;
+    }
+  }
+  return false;
+}
+
+// -----------------------------------------------------------------------------
 // State interface
 // -----------------------------------------------------------------------------
 
@@ -140,7 +251,8 @@ export interface ReviewState {
   ): Promise<void>;
   setFormat(format: RecordFormat): Promise<void>;
   record(i: number): Promise<ParsedRecord>;
-  prefer(p: Preference, strength?: 1 | 2 | 3): void;
+  prefer(p: Preference, strength?: 1 | 2 | 3): void; // judges the pair shown (v3.3)
+  setStrength(s: 1 | 2 | 3): void; // the pair just judged (v3.3)
   decide(ref: CandidateRef, status: DecisionStatus): void;
   edit(ref: CandidateRef, path: string, value: EditValue): void;
   setLabels(ref: CandidateRef, labels: string[]): void;
@@ -191,6 +303,8 @@ function getPromptCount(state: ReviewState): number {
 }
 
 function deriveMode(format: RecordFormat, source: RecordSource): 'compare' | 'single' {
+  // Rows sources have no grouping yet, so compare mode falls back to single (WP 5 i, D-009)
+  if (source.kind !== 'jsonl') return 'single';
   if (format.kind === 'preference' || format.kind === 'candidates') {
     return 'compare';
   }
@@ -237,7 +351,7 @@ function pruneIfEmpty(
   if (!d) return;
 
   const hasStatus = d.status !== 'unreviewed';
-  const hasCompare = d.compare !== undefined;
+  const hasCompare = d.compare !== undefined && d.compare.length > 0;
   const hasLabels = d.labels !== undefined && d.labels.length > 0;
   const hasScore = d.score !== undefined;
   const hasNotes = d.notes !== undefined;
@@ -248,6 +362,57 @@ function pruneIfEmpty(
   }
 }
 
+/** Group sizes when the store is in compare mode over a JSONL source, else null. */
+function compareSizes(state: ReviewState): GroupSizes | null {
+  if (state.mode !== 'compare' || state.source?.kind !== 'jsonl') return null;
+  return groupSizes(state.source.index, state.format);
+}
+
+/** The entry holding prompt idx's compare[]: its group's first line in compare mode. */
+function promptEntry(
+  state: ReviewState,
+  sizes: GroupSizes | null,
+  idx: number
+): Decision | undefined {
+  const ref = sizes ? String(firstLineOf(sizes, idx)) : formatPromptRef(idx);
+  return state.decisions.get(ref);
+}
+
+/**
+ * Review state of prompt idx (decision e). Compare mode: N ≥ 2 and all N−1 pairs
+ * judged, or N ≤ 1 and candidates[0] ?? promptRef has a status. Single mode: the
+ * line's status. Compare mode without a FileIndex keeps the earlier rule.
+ */
+function isReviewed(state: ReviewState, sizes: GroupSizes | null, idx: number): boolean {
+  if (state.mode === 'compare') {
+    if (!sizes) return !!state.decisions.get(formatPromptRef(idx))?.compare?.length;
+    const n = sizes.n[idx];
+    if (n >= 2) return (promptEntry(state, sizes, idx)?.compare?.length ?? 0) >= n - 1;
+    const status = state.decisions.get(reviewRefOf(sizes, idx))?.status;
+    return status !== undefined && status !== 'unreviewed';
+  }
+  const decision = state.decisions.get(formatPromptRef(idx));
+  return !!decision && decision.status !== 'unreviewed';
+}
+
+/**
+ * Set compare[pair] to value, or remove it when value is undefined (undo of an
+ * append). The compare key is dropped when the array empties.
+ */
+function withComparePair(
+  d: Decision,
+  pair: number,
+  value: CompareDecision | undefined
+): Decision {
+  const compare = [...(d.compare ?? [])];
+  if (value === undefined) compare.splice(pair, 1);
+  else compare[pair] = value;
+  const { compare: _, ...rest } = d;
+  return compare.length > 0
+    ? { ...rest, compare, updatedAt: Date.now() }
+    : { ...rest, updatedAt: Date.now() };
+}
+
 function findNextUnreviewed(
   state: ReviewState,
   startFrom: number,
@@ -255,21 +420,23 @@ function findNextUnreviewed(
 ): number | null {
   const total = getPromptCount(state);
   if (total === 0) return null;
+  const sizes = compareSizes(state);
 
   for (let i = 1; i <= total; i++) {
     const idx = (startFrom + i * direction + total) % total;
-    const ref = formatPromptRef(idx);
-    const decision = state.decisions.get(ref);
-
-    if (state.mode === 'compare') {
-      // In compare mode, unreviewed = no compare decision
-      if (!decision?.compare) return idx;
-    } else {
-      // In single mode, unreviewed = status is 'unreviewed'
-      if (!decision || decision.status === 'unreviewed') return idx;
-    }
+    if (!isReviewed(state, sizes, idx)) return idx;
   }
   return null;
+}
+
+/** Cursor for an undo/redo of ref: its group in compare mode, its line in single mode. */
+function cursorForRef(state: ReviewState, ref: CandidateRef): number {
+  const line = parseRefLine(ref);
+  if (state.mode === 'compare' && state.source?.kind === 'jsonl') {
+    const groups = state.source.index.groups;
+    return line < groups.length ? groups[line] : 0;
+  }
+  return line;
 }
 
 /**
@@ -294,26 +461,28 @@ function matchesFilter(
 ): boolean {
   if (state.filter === 'all') return true;
 
-  const ref = formatPromptRef(idx);
-  const decision = state.decisions.get(ref);
+  // Compare mode: any candidate of the prompt matches (Q12); single mode the line's entry
+  const sizes = compareSizes(state);
+  const matches = (test: (d: Decision | undefined) => boolean) =>
+    sizes ? someCandidate(state, sizes, idx, test) : test(promptEntry(state, sizes, idx));
+  const isEdited = (d: Decision | undefined) => !!(d?.edits && Object.keys(d.edits).length > 0);
 
   switch (state.filter) {
     case 'unreviewed':
-      if (state.mode === 'compare') {
-        return !decision?.compare;
-      }
-      return !decision || decision.status === 'unreviewed';
+      return !isReviewed(state, sizes, idx);
     case 'kept':
-      return decision?.status === 'kept';
+      return matches((d) => d?.status === 'kept');
     case 'rejected':
-      return decision?.status === 'rejected';
+      return matches((d) => d?.status === 'rejected');
     case 'skipped':
-      return decision?.status === 'skipped';
+      return matches((d) => d?.status === 'skipped');
     case 'edited':
-      return !!(decision?.edits && Object.keys(decision.edits).length > 0);
+      return matches(isEdited);
     case 'unparseable':
       if (state.source?.kind === 'jsonl') {
-        return binarySearch(state.source.index.unparseable, idx);
+        // idx is a group in compare mode; unparseable holds lines
+        const line = sizes ? firstLineOf(sizes, idx) : idx;
+        return binarySearch(state.source.index.unparseable, line);
       }
       return false;
     default:
@@ -522,6 +691,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
           source.index.groups = regroupResult.groups;
           source.index.groupCount = regroupResult.groupCount;
           source.index.unparseable = regroupResult.unparseable;
+          source.index.candidates = regroupResult.candidates;
         }
 
         const restoredMode = deriveMode(restored.format, source);
@@ -548,7 +718,8 @@ export const useReviewStore = create<ReviewState>((set, get) => {
           storageState: { kind: 'idle' },
           lastSavedAt: result.session.savedAt,
           _dirty: false,
-          _lastSerializedText: sessionText,
+          // A migrated version-2 text is not what the next save writes (version 3)
+          _lastSerializedText: result.migrated ? null : sessionText,
         });
         return;
       }
@@ -610,31 +781,55 @@ export const useReviewStore = create<ReviewState>((set, get) => {
     prefer(p, strength) {
       const state = get();
       if (state.mode !== 'compare') return; // No-op in single mode
+      if (state.source?.kind !== 'jsonl') return; // Candidates come from the FileIndex
+      const index = state.source.index;
+      if (state.cursor >= index.groupCount) return;
 
-      const ref = formatPromptRef(state.cursor);
-      const existing = state.decisions.get(ref);
-      const before = existing?.compare;
+      const sizes = groupSizes(index, state.format);
+      const { promptRef, candidates } = promptCandidates(
+        sizes.table,
+        index.candidates,
+        state.format,
+        state.cursor
+      );
+      if (candidates.length < 2) return; // No pair to judge
 
-      // Determine left/right refs based on format
-      const left = formatCandidateRef(state.cursor, 0);
-      const right = formatCandidateRef(state.cursor, 1);
+      const existing = state.decisions.get(promptRef);
+      const ks = deriveKnockout(candidates, existing?.compare);
+      const shown = ks.shown!;
+      const after: CompareDecision = {
+        left: shown.left,
+        right: shown.right,
+        preference: p,
+        strength,
+      };
 
-      const after: CompareDecision = { left, right, preference: p, strength };
+      // Append the pair shown, or replace the last pair of a completed prompt
+      const compare = [...(existing?.compare ?? [])];
+      let action: HistoryAction;
+      if (ks.complete) {
+        const before = compare[shown.pair];
+        compare[shown.pair] = after;
+        action = { type: 'compare', ref: promptRef, pair: shown.pair, before, after };
+      } else {
+        compare.push(after);
+        action = { type: 'compare', ref: promptRef, pair: ks.judged, after };
+      }
 
-      // Create/update decision
       const newDecision: Decision = {
-        ...getOrCreateDecision(state.decisions, ref),
-        compare: after,
+        ...getOrCreateDecision(state.decisions, promptRef),
+        compare,
         updatedAt: Date.now(),
       };
 
       const newDecisions = new Map(state.decisions);
-      newDecisions.set(ref, newDecision);
+      newDecisions.set(promptRef, newDecision);
 
       set({ decisions: newDecisions });
-      pushHistory({ type: 'compare', ref, before, after });
+      pushHistory(action);
 
-      // Auto-advance to next unreviewed
+      // Auto-advance only once the prompt's last pair is judged
+      if (compare.length < ks.totalPairs) return;
       const nextIdx = findNextUnreviewed(
         { ...state, decisions: newDecisions },
         state.cursor
@@ -642,6 +837,38 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       if (nextIdx !== null && nextIdx !== state.cursor) {
         set({ cursor: nextIdx });
         scheduleStoreSave();
+      }
+    },
+
+    setStrength(s) {
+      const state = get();
+      if (state.mode !== 'compare') return;
+
+      // The pair recorded by the most recent compare action, whichever prompt it is on
+      for (let i = state.past.length - 1; i >= 0; i--) {
+        const action = state.past[i];
+        if (action.type !== 'compare') continue;
+
+        const existing = state.decisions.get(action.ref);
+        const element = existing?.compare?.[action.pair];
+        if (!existing || !element || element.strength === s) return;
+
+        const after: CompareDecision = { ...element, strength: s };
+        const compare = [...existing.compare!];
+        compare[action.pair] = after;
+
+        const newDecisions = new Map(state.decisions);
+        newDecisions.set(action.ref, { ...existing, compare, updatedAt: Date.now() });
+
+        set({ decisions: newDecisions });
+        pushHistory({
+          type: 'compare',
+          ref: action.ref,
+          pair: action.pair,
+          before: element,
+          after,
+        });
+        return;
       }
     },
 
@@ -774,7 +1001,6 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       const newFuture = [action, ...state.future];
 
       const ref = action.ref;
-      const lineIdx = parseRefLine(ref);
       const newDecisions = new Map(state.decisions);
       // Get existing or create base decision (decision may have been pruned)
       const existing = newDecisions.get(ref) ?? { status: 'unreviewed' as const, updatedAt: Date.now() };
@@ -782,12 +1008,11 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       if (action.type === 'status') {
         newDecisions.set(ref, { ...existing, status: action.before, updatedAt: Date.now() });
       } else if (action.type === 'compare') {
-        if (action.before === undefined) {
-          const { compare: _, ...rest } = existing;
-          newDecisions.set(ref, { ...rest, updatedAt: Date.now() });
-        } else {
-          newDecisions.set(ref, { ...existing, compare: action.before, updatedAt: Date.now() });
-        }
+        // An append (before undefined) is always the last pair: history is LIFO
+        newDecisions.set(
+          ref,
+          withComparePair(existing, action.pair, action.before)
+        );
       } else if (action.type === 'edit') {
         const edits = { ...existing.edits };
         if (action.before === undefined) {
@@ -814,7 +1039,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         past: newPast,
         future: newFuture,
         decisions: newDecisions,
-        cursor: lineIdx, // Move cursor to affected prompt
+        cursor: cursorForRef(state, ref), // Move cursor to affected prompt
       });
       scheduleStoreSave();
     },
@@ -828,14 +1053,13 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       const newPast = [...state.past, action];
 
       const ref = action.ref;
-      const lineIdx = parseRefLine(ref);
       const newDecisions = new Map(state.decisions);
       const existing = newDecisions.get(ref) ?? { status: 'unreviewed', updatedAt: Date.now() };
 
       if (action.type === 'status') {
         newDecisions.set(ref, { ...existing, status: action.after, updatedAt: Date.now() });
       } else if (action.type === 'compare') {
-        newDecisions.set(ref, { ...existing, compare: action.after, updatedAt: Date.now() });
+        newDecisions.set(ref, withComparePair(existing, action.pair, action.after));
       } else if (action.type === 'edit') {
         const edits = { ...existing.edits, [action.path]: action.after };
         newDecisions.set(ref, { ...existing, edits, updatedAt: Date.now() });
@@ -852,7 +1076,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         past: newPast,
         future: newFuture,
         decisions: newDecisions,
-        cursor: lineIdx, // Move cursor to affected prompt
+        cursor: cursorForRef(state, ref), // Move cursor to affected prompt
       });
       scheduleStoreSave();
     },
@@ -949,6 +1173,13 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       // Run regroup with new format
       const result = await handle.regroup(format);
 
+      // Copy the regroup result into the index before anything reads it
+      // (idempotent with the reader's in-place update)
+      state.source.index.groups = result.groups;
+      state.source.index.groupCount = result.groupCount;
+      state.source.index.unparseable = result.unparseable;
+      state.source.index.candidates = result.candidates;
+
       // Re-derive mode
       const newMode = deriveMode(format, state.source);
 
@@ -1029,8 +1260,8 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         return;
       }
 
-      // Version 2 required even with force
-      if (result.session.version !== 2) {
+      // A supported version is required even with force (v2 is migrated to 3 on parse)
+      if (result.session.version !== 3) {
         set({
           session: {
             kind: 'refused',
@@ -1070,6 +1301,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
           state.source.index.groups = regroupResult.groups;
           state.source.index.groupCount = regroupResult.groupCount;
           state.source.index.unparseable = regroupResult.unparseable;
+          state.source.index.candidates = regroupResult.candidates;
         }
       }
 
@@ -1125,44 +1357,69 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       let skipped = 0;
       let edited = 0;
 
-      for (let i = 0; i < total; i++) {
-        const ref = formatPromptRef(i);
-        const decision = state.decisions.get(ref);
+      // Left/right/tie/both_bad count judged pairs (§2.8, v3.3)
+      const tally = (compare: CompareDecision[] | undefined) => {
+        for (const c of compare ?? []) {
+          if (c.preference === 'left') left++;
+          else if (c.preference === 'right') right++;
+          else if (c.preference === 'tie') tie++;
+          else bothBad++;
+        }
+      };
+      const tallyStatus = (decision: Decision) => {
+        if (decision.status === 'kept') kept++;
+        if (decision.status === 'rejected') rejected++;
+        if (decision.status === 'skipped') skipped++;
+        if (decision.edits && Object.keys(decision.edits).length > 0) edited++;
+      };
 
-        if (decision) {
-          if (decision.compare) {
-            reviewed++;
-            switch (decision.compare.preference) {
-              case 'left':
-                left++;
-                break;
-              case 'right':
-                right++;
-                break;
-              case 'tie':
-                tie++;
-                break;
-              case 'both_bad':
-                bothBad++;
-                break;
-            }
-          } else if (state.mode === 'single' && decision.status !== 'unreviewed') {
+      // Iterate the sparse decisions map, not every prompt: O(entries + pairs)
+      const sizes = compareSizes(state);
+      if (sizes && state.source?.kind === 'jsonl') {
+        const index = state.source.index;
+        for (const [ref, decision] of state.decisions) {
+          const line = parseRefLine(ref);
+          if (line >= index.lineCount) continue;
+          const g = index.groups[line];
+          const n = sizes.n[g];
+          const isPrompt = ref === String(line) && firstLineOf(sizes, g) === line;
+
+          // Each group counts once: its prompt entry (N ≥ 2) or its review ref (N ≤ 1)
+          if (n >= 2) {
+            if (isPrompt && (decision.compare?.length ?? 0) >= n - 1) reviewed++;
+          } else if (ref === reviewRefOf(sizes, g) && decision.status !== 'unreviewed') {
             reviewed++;
           }
 
-          if (decision.status === 'kept') kept++;
-          if (decision.status === 'rejected') rejected++;
-          if (decision.status === 'skipped') skipped++;
-          if (decision.edits && Object.keys(decision.edits).length > 0) edited++;
+          if (isPrompt) tally(decision.compare);
+          // Kept, rejected, skipped and edited count candidates (Q12); an entry
+          // that names no candidate of its prompt is not counted
+          if (isCandidateEntry(sizes, index.groups, ref)) tallyStatus(decision);
+        }
+        unreviewed = total - reviewed;
+      } else {
+        // Earlier rule: one entry per prompt or line, keyed by its index
+        let touched = 0;
+        let unreviewedEntries = 0;
+        for (const [ref, decision] of state.decisions) {
+          const line = parseRefLine(ref);
+          if (ref !== String(line) || line >= total) continue;
+          touched++;
+
+          tally(decision.compare);
+          // Same rule as isReviewed: compare decisions in compare mode, status in single mode (D-002)
+          if (state.mode === 'compare' ? !!decision.compare?.length : decision.status !== 'unreviewed') {
+            reviewed++;
+          }
+          tallyStatus(decision);
 
           if (state.mode === 'compare') {
-            if (!decision.compare) unreviewed++;
-          } else {
-            if (decision.status === 'unreviewed') unreviewed++;
+            if (!decision.compare?.length) unreviewedEntries++;
+          } else if (decision.status === 'unreviewed') {
+            unreviewedEntries++;
           }
-        } else {
-          unreviewed++;
         }
+        unreviewed = total - touched + unreviewedEntries;
       }
 
       // Get unparseable count from index
@@ -1193,7 +1450,22 @@ export const useReviewStore = create<ReviewState>((set, get) => {
 // Page lifecycle handlers
 // -----------------------------------------------------------------------------
 
+// fetch keepalive bodies are capped at 64 KiB (Fetch standard)
+const KEEPALIVE_QUOTA_BYTES = 65536;
+
+/** Ask the browser to confirm closing while a save is pending or in flight (D-005 G). */
+function confirmCloseWhileSaving(event: BeforeUnloadEvent): void {
+  event.preventDefault();
+  event.returnValue = '';
+}
+
 if (typeof window !== 'undefined') {
+  // Registered only while unsaved, so the back/forward cache is unaffected otherwise
+  onSavePendingChange((pending) => {
+    if (pending) window.addEventListener('beforeunload', confirmCloseWhileSaving);
+    else window.removeEventListener('beforeunload', confirmCloseWhileSaving);
+  });
+
   window.addEventListener('pagehide', () => {
     const state = useReviewStore.getState();
     if (!state.source || !state._dirty) return;
@@ -1212,6 +1484,9 @@ if (typeof window !== 'undefined') {
       () => Date.now()
     );
 
+    // Browsers refuse a keepalive body over the quota, so a larger session
+    // goes as an ordinary request (D-005 A); IndexedDB is written first (B)
+    const keepalive = new TextEncoder().encode(text).length <= KEEPALIVE_QUOTA_BYTES;
     saveImmediate(
       {
         generation: gen,
@@ -1221,7 +1496,7 @@ if (typeof window !== 'undefined') {
         onError: () => {},
         onIDBUnavailable: () => {},
       },
-      { keepalive: true }
+      { keepalive, idbFirst: true }
     );
   });
 
@@ -1245,29 +1520,33 @@ if (typeof window !== 'undefined') {
           () => Date.now()
         );
 
-        saveImmediate({
-          generation: gen,
-          fingerprint: state.fingerprint,
-          getText: () => text,
-          onSaved: (savedAt) => {
-            useReviewStore.setState({
-              storageState: { kind: 'saved' },
-              lastSavedAt: savedAt,
-              _dirty: false,
-              _lastSerializedText: text,
-            });
+        saveImmediate(
+          {
+            generation: gen,
+            fingerprint: state.fingerprint,
+            getText: () => text,
+            onSaved: (savedAt) => {
+              useReviewStore.setState({
+                storageState: { kind: 'saved' },
+                lastSavedAt: savedAt,
+                _dirty: false,
+                _lastSerializedText: text,
+              });
+            },
+            onError: (reason) => {
+              useReviewStore.setState({
+                storageState: { kind: 'error', message: reason },
+              });
+            },
+            onIDBUnavailable: (reason) => {
+              useReviewStore.setState({
+                storageState: { kind: 'unavailable', reason },
+              });
+            },
           },
-          onError: (reason) => {
-            useReviewStore.setState({
-              storageState: { kind: 'error', message: reason },
-            });
-          },
-          onIDBUnavailable: (reason) => {
-            useReviewStore.setState({
-              storageState: { kind: 'unavailable', reason },
-            });
-          },
-        });
+          // The page may be closing: write IndexedDB before the PUT (D-005 B)
+          { idbFirst: true }
+        );
       }
     }
   });

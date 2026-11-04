@@ -35,6 +35,7 @@ function createMockSource(lineCount: number, groupCount?: number): RecordSource 
     groups,
     groupCount: actualGroupCount,
     unparseable: new Uint32Array(0),
+    candidates: new Uint16Array(lineCount).fill(1),
   };
 
   return {
@@ -42,6 +43,8 @@ function createMockSource(lineCount: number, groupCount?: number): RecordSource 
     index,
     readText: async (i: number) => JSON.stringify({ instruction: `Prompt ${groups[i]}`, output: `Response ${i}` }),
     readRaw: async (i: number) => new Blob([JSON.stringify({ instruction: `Prompt ${groups[i]}`, output: `Response ${i}` })]),
+    readRawRange: async (from: number, to: number) =>
+      new Blob(Array.from({ length: to - from + 1 }, (_, k) => JSON.stringify({ instruction: `Prompt ${groups[from + k]}`, output: `Response ${from + k}` }))),
   };
 }
 
@@ -83,7 +86,7 @@ beforeEach(() => {
 describe('compare loop', () => {
   describe('preference recording', () => {
     it('prefer("left") records preference on prompt ref', () => {
-      const source = createMockSource(6); // 3 groups of 2
+      const source = createMockSource(6, 3); // 3 groups of 2
       useReviewStore.setState({
         source,
         format: flatFormat,
@@ -99,11 +102,11 @@ describe('compare loop', () => {
       const decision = decisions.get(promptRef);
 
       expect(decision).toBeDefined();
-      expect(decision?.compare?.preference).toBe('left');
+      expect(decision?.compare?.[0]?.preference).toBe('left');
     });
 
     it('prefer("right") records preference', () => {
-      const source = createMockSource(6);
+      const source = createMockSource(6, 3);
       useReviewStore.setState({
         source,
         format: flatFormat,
@@ -118,11 +121,11 @@ describe('compare loop', () => {
       const promptRef = formatPromptRef(2);
       const decision = decisions.get(promptRef);
 
-      expect(decision?.compare?.preference).toBe('right');
+      expect(decision?.compare?.[0]?.preference).toBe('right');
     });
 
     it('prefer("tie") records tie preference', () => {
-      const source = createMockSource(4);
+      const source = createMockSource(4, 2);
       useReviewStore.setState({
         source,
         format: flatFormat,
@@ -136,11 +139,11 @@ describe('compare loop', () => {
       const decisions = useReviewStore.getState().decisions;
       const promptRef = formatPromptRef(0);
 
-      expect(decisions.get(promptRef)?.compare?.preference).toBe('tie');
+      expect(decisions.get(promptRef)?.compare?.[0]?.preference).toBe('tie');
     });
 
     it('prefer("both_bad") records both_bad preference', () => {
-      const source = createMockSource(4);
+      const source = createMockSource(4, 2);
       useReviewStore.setState({
         source,
         format: flatFormat,
@@ -154,7 +157,7 @@ describe('compare loop', () => {
       const decisions = useReviewStore.getState().decisions;
       const promptRef = formatPromptRef(0);
 
-      expect(decisions.get(promptRef)?.compare?.preference).toBe('both_bad');
+      expect(decisions.get(promptRef)?.compare?.[0]?.preference).toBe('both_bad');
     });
 
     it('prefer with strength sets preference and strength in one call', () => {
@@ -175,11 +178,11 @@ describe('compare loop', () => {
       const promptRef = formatPromptRef(0);
       const decision = decisions.get(promptRef);
 
-      expect(decision?.compare?.preference).toBe('left');
-      expect(decision?.compare?.strength).toBe(2);
+      expect(decision?.compare?.[0]?.preference).toBe('left');
+      expect(decision?.compare?.[0]?.strength).toBe(2);
     });
 
-    it('strength can be added to existing preference by going back (decision j)', () => {
+    it('re-judging a completed prompt replaces its pair', () => {
       const source = createMockSource(4, 2); // 4 lines, 2 groups
       useReviewStore.setState({
         source,
@@ -203,8 +206,8 @@ describe('compare loop', () => {
       const promptRef = formatPromptRef(0);
       const decision = decisions.get(promptRef);
 
-      expect(decision?.compare?.preference).toBe('left');
-      expect(decision?.compare?.strength).toBe(2);
+      expect(decision?.compare?.[0]?.preference).toBe('left');
+      expect(decision?.compare?.[0]?.strength).toBe(2);
       // Cursor should advance back to 1
       expect(useReviewStore.getState().cursor).toBe(1);
     });
@@ -372,7 +375,7 @@ describe('compare loop', () => {
     });
 
     it('undo() reverses preference', () => {
-      const source = createMockSource(4);
+      const source = createMockSource(4, 2);
       useReviewStore.setState({
         source,
         format: flatFormat,
@@ -385,7 +388,7 @@ describe('compare loop', () => {
 
       // Verify preference was recorded
       const promptRef = formatPromptRef(0);
-      expect(useReviewStore.getState().decisions.get(promptRef)?.compare?.preference).toBe('left');
+      expect(useReviewStore.getState().decisions.get(promptRef)?.compare?.[0]?.preference).toBe('left');
 
       // Undo
       useReviewStore.getState().undo();

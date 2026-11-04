@@ -1,0 +1,52 @@
+{
+  "description": "Rows sharing a prompt (prompts A, B, A, C, B, A): prompt A judged through two pairs with line refs",
+  "format": {
+    "kind": "flat",
+    "promptPath": "prompt",
+    "responsePath": "response"
+  },
+  "records": [
+    { "prompt": "A", "response": "1" },
+    { "prompt": "B", "response": "2" },
+    { "prompt": "A", "response": "3" },
+    { "prompt": "C", "response": "4" },
+    { "prompt": "B", "response": "5" },
+    { "prompt": "A", "response": "6" }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": [
+        {
+          "left": "0",
+          "right": "2",
+          "preference": "right"
+        },
+        {
+          "left": "5",
+          "right": "2",
+          "preference": "left"
+        }
+      ],
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "prompt": "A",
+      "chosen": "3",
+      "rejected": "1"
+    },
+    {
+      "prompt": "A",
+      "chosen": "6",
+      "rejected": "3"
+    }
+  ],
+  "expectedEditPairs": [],
+  "expectedExcluded": {
+    "ties": 0,
+    "bothBad": 0
+  },
+  "note": "Prompt A is group 0, lines 0, 2 and 5. Its compare[] lives on the ref of its first line, \"0\"; its candidates are the line refs \"0\", \"2\", \"5\". Group ids differ from first lines: group 2 (prompt C) starts at line 3. Each chosen/rejected text is read from that candidate's own line."
+}

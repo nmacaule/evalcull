@@ -78,9 +78,10 @@ afterEach(() => {
 // Mock helpers
 // -----------------------------------------------------------------------------
 
-function createMockSource(lineCount: number): RecordSource {
+function createMockSource(lineCount: number, groupCount: number = lineCount): RecordSource {
+  // Interleaved groups: line i → group (i % groupCount), so group g's first line is g
   const groups = new Uint32Array(lineCount);
-  for (let i = 0; i < lineCount; i++) groups[i] = i;
+  for (let i = 0; i < lineCount; i++) groups[i] = i % groupCount;
 
   const index: FileIndex = {
     fingerprint: 'test-fingerprint',
@@ -90,8 +91,9 @@ function createMockSource(lineCount: number): RecordSource {
     eols: new Uint8Array(lineCount),
     hasBom: false,
     groups,
-    groupCount: lineCount,
+    groupCount,
     unparseable: new Uint32Array(0),
+    candidates: new Uint16Array(lineCount).fill(1),
   };
 
   return {
@@ -99,6 +101,8 @@ function createMockSource(lineCount: number): RecordSource {
     index,
     readText: async (i: number) => JSON.stringify({ line: i }),
     readRaw: async (i: number) => new Blob([JSON.stringify({ line: i })]),
+    readRawRange: async (from: number, to: number) =>
+      new Blob(Array.from({ length: to - from + 1 }, (_, k) => JSON.stringify({ line: from + k }))),
   };
 }
 
@@ -249,7 +253,7 @@ describe('persistence', () => {
 
   it('serialised form matches fixture byte-identically', () => {
     const text = readFileSync(
-      join(import.meta.dirname, 'fixtures/sessions/valid-v2.json'),
+      join(import.meta.dirname, 'fixtures/sessions/valid-v3.json'),
       'utf-8'
     );
     const result = parseSessionText(text);
@@ -286,7 +290,7 @@ describe('persistence', () => {
 
     // Schema fields are native numbers
     expect(typeof result.session.version).toBe('number');
-    expect(result.session.version).toBe(2);
+    expect(result.session.version).toBe(3); // version 2 is migrated on parse (PRD v3.3)
     expect(typeof result.session.cursor).toBe('number');
     expect(result.session.cursor).toBe(0);
     expect(typeof result.session.savedAt).toBe('number');
@@ -295,8 +299,8 @@ describe('persistence', () => {
     const decision0 = result.session.decisions['0'];
     expect(typeof decision0.score).toBe('number');
     expect(decision0.score).toBe(85);
-    expect(typeof decision0.compare?.strength).toBe('number');
-    expect(decision0.compare?.strength).toBe(2);
+    expect(typeof decision0.compare?.[0]?.strength).toBe('number');
+    expect(decision0.compare?.[0]?.strength).toBe(2);
 
     // History score action
     const scoreAction = result.session.history.find((h) => h.type === 'score');
@@ -363,7 +367,7 @@ describe('persistence', () => {
     expect(result.reason).toContain('99');
   });
 
-  it('importSession with force bypasses mismatch but requires version 2', async () => {
+  it('importSession with force bypasses mismatch but requires a supported version', async () => {
     const source = createMockSource(10);
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
@@ -401,7 +405,7 @@ describe('persistence', () => {
   });
 
   it('PUT body equals exportSession bytes', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     const transport = createMockTransport();
     configureSidecar({ token: 'test-token', transport });
@@ -438,8 +442,8 @@ describe('undo/redo', () => {
     'notes',
   ];
 
-  async function setupStore() {
-    const source = createMockSource(20);
+  async function setupStore(groupCount: number) {
+    const source = createMockSource(20, groupCount);
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
@@ -447,8 +451,16 @@ describe('undo/redo', () => {
     });
   }
 
+  // WP 6c: run in both modes. Single: one line per prompt, as before.
+  // Compare: two candidates per prompt (groupCount < lineCount derives compare mode).
+  describe.each([
+    { mode: 'single', groupCount: 20 },
+    { mode: 'compare', groupCount: 10 },
+  ] as const)('$mode mode', ({ mode, groupCount }) => {
+  const setup = () => setupStore(groupCount);
+
   it.each(SEEDS)('seed %d: undo to empty returns initial decisions Map', async (seed) => {
-    await setupStore();
+    await setup();
     const rng = mulberry32(seed);
     const store = useReviewStore.getState();
 
@@ -492,7 +504,7 @@ describe('undo/redo', () => {
   });
 
   it.each(SEEDS)('seed %d: redo to end returns final decisions', async (seed) => {
-    await setupStore();
+    await setup();
     const rng = mulberry32(seed);
     const store = useReviewStore.getState();
 
@@ -524,7 +536,7 @@ describe('undo/redo', () => {
   });
 
   it.each(SEEDS)('seed %d: each single undo changes exactly one entry or cursor', async (seed) => {
-    await setupStore();
+    await setup();
     const rng = mulberry32(seed);
 
     // Make several changes
@@ -549,7 +561,7 @@ describe('undo/redo', () => {
   });
 
   it('edit undo: undoing deletes key, lineDecision has no edits', async () => {
-    await setupStore();
+    await setup();
 
     const ref = formatPromptRef(5);
     useReviewStore.getState().edit(ref, 'content', 'edited');
@@ -568,10 +580,16 @@ describe('undo/redo', () => {
     expect(decision?.edits).toBeUndefined();
   });
 
-  it.each(['status', 'compare', 'edit', 'labels', 'score', 'notes'] as const)(
+  // Q11 (owner, 4 Nov 2026): prefer() needs a two-candidate prompt, so the
+  // compare row runs only in compare mode
+  it.each(
+    (['status', 'compare', 'edit', 'labels', 'score', 'notes'] as const).filter(
+      (t) => mode === 'compare' || t !== 'compare'
+    )
+  )(
     'handles %s action correctly',
     async (actionType) => {
-      await setupStore();
+      await setup();
       const ref = formatPromptRef(0);
 
       switch (actionType) {
@@ -585,7 +603,7 @@ describe('undo/redo', () => {
         case 'compare':
           useReviewStore.getState().setMode('compare');
           useReviewStore.getState().prefer('left');
-          expect(useReviewStore.getState().decisions.get(ref)?.compare?.preference).toBe('left');
+          expect(useReviewStore.getState().decisions.get(ref)?.compare?.[0]?.preference).toBe('left');
           useReviewStore.getState().undo();
           // Decision deleted when no meaningful state remains after undo
           expect(useReviewStore.getState().decisions.get(ref)).toBeUndefined();
@@ -624,7 +642,7 @@ describe('undo/redo', () => {
   );
 
   it('setLabels(ref, []) on untouched ref leaves no entry', async () => {
-    await setupStore();
+    await setup();
     const ref = formatPromptRef(5);
 
     // No decision should exist yet
@@ -636,7 +654,7 @@ describe('undo/redo', () => {
   });
 
   it('redo of clearing action leaves no entry', async () => {
-    await setupStore();
+    await setup();
     const ref = formatPromptRef(0);
 
     // Add labels, then clear them
@@ -654,6 +672,7 @@ describe('undo/redo', () => {
     // Redo: should clear and prune again
     useReviewStore.getState().redo();
     expect(useReviewStore.getState().decisions.get(ref)).toBeUndefined();
+  });
   });
 
   it('undo after reload leaves native numbers in state (score and strength)', async () => {
@@ -809,7 +828,7 @@ describe('record cache', () => {
 
 describe('IndexedDB', () => {
   it('stores and retrieves session by fingerprint', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     const source = createMockSource(10);
     await useReviewStore.getState().load(source, {
@@ -834,7 +853,7 @@ describe('IndexedDB', () => {
   });
 
   it('configureStorage seam: factory A save, factory B load returns null', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     // Configure factory A and save
     const factoryA = new IDBFactory();
@@ -849,6 +868,11 @@ describe('IndexedDB', () => {
 
     useReviewStore.getState().decide('0', 'kept');
     await vi.advanceTimersByTimeAsync(500);
+    // fake-indexeddb schedules on setImmediate, which is not faked: real
+    // macrotask rounds let the IndexedDB write finish without moving the clock
+    for (let i = 0; i < 20 && useReviewStore.getState().storageState.kind !== 'saved'; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
 
     // Verify saved to factory A
     expect(useReviewStore.getState().storageState.kind).toBe('saved');
@@ -896,7 +920,7 @@ describe('IndexedDB', () => {
 
 describe('sidecar transport', () => {
   it('PUT sends session body through transport', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     configureStorage({ indexedDB: undefined });
 
     const transport = createMockTransport();
@@ -916,10 +940,81 @@ describe('sidecar transport', () => {
     await vi.advanceTimersByTimeAsync(500);
     await Promise.resolve();
 
-    expect(transport.putCalls.length).toBeGreaterThan(0);
+    // One change, one debounced save
+    expect(transport.putCalls.length).toBe(1);
     const lastCall = transport.putCalls[transport.putCalls.length - 1];
     expect(typeof lastCall.text).toBe('string');
-    expect(lastCall.text).toContain('"version": 2');
+    expect(lastCall.text).toContain('"version": 3');
+  });
+
+  it("saves no later than 2 s after the first unsaved change while changes keep coming every 400 ms (D-010)", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    configureStorage({ indexedDB: undefined });
+    const putTimes: number[] = [];
+    configureSidecar({
+      token: 'tok123',
+      transport: {
+        get: async () => null,
+        put: async () => {
+          putTimes.push(Date.now());
+          return { ok: true as const };
+        },
+      },
+    });
+    await useReviewStore.getState().load(createMockSource(20), {
+      sourceName: 'test.jsonl',
+      fingerprint: 'maxwait-fp',
+      format: { kind: 'unknown' },
+    });
+
+    // A change every 400 ms for 3 s: the 500 ms debounce alone never fires
+    const firstChange = Date.now();
+    for (let t = 0; t < 3000; t += 400) {
+      useReviewStore.getState().decide(String(t / 400), 'kept');
+      await vi.advanceTimersByTimeAsync(400);
+    }
+
+    // Changes at 0, 400 … 2800 ms: the maxWait save fires at 2,000 ms; the changes
+    // from 2,000 ms on keep re-arming the debounce until the loop ends at 3,200 ms
+    expect(putTimes.length).toBe(1);
+    expect(putTimes[0] - firstChange).toBeLessThanOrEqual(2000);
+  });
+
+  it('with IndexedDB present, one save sends the PUT and then writes the same text to IndexedDB', async () => {
+    // fake-indexeddb schedules on setImmediate, which is not faked here: real
+    // macrotask rounds let the IndexedDB write finish without moving the clock.
+    // clearTimeout is faked too, so the debounce can cancel its earlier timer.
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const transport = createMockTransport();
+    configureSidecar({ token: 'tok123', transport });
+
+    await useReviewStore.getState().load(createMockSource(10), {
+      sourceName: 'test.jsonl',
+      fingerprint: 'idb-chain-fp',
+      format: { kind: 'unknown' },
+    });
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    await Promise.resolve();
+    for (let i = 0; i < 20 && useReviewStore.getState().storageState.kind !== 'saved'; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+
+    expect(useReviewStore.getState().storageState).toEqual({ kind: 'saved' });
+    expect(transport.putCalls.length).toBe(1);
+    const stored = await new Promise<string>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onsuccess = () => {
+        const get = req.result.transaction('sessions').objectStore('sessions').get('idb-chain-fp');
+        get.onsuccess = () => resolve(get.result as string);
+        get.onerror = () => reject(get.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    expect(stored).toBe(transport.putCalls[0].text);
+    expect(JSON.parse(stored).decisions['0'].status).toBe('kept');
   });
 
   it('makeFetchTransport sends PUT with correct method, path, headers and body', async () => {
@@ -992,7 +1087,7 @@ describe('save queue', () => {
    * after load() bumps the generation. The late-completing PUT is ignored.
    */
   it('load bumps generation so late PUT completion is ignored', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     configureStorage({ indexedDB: undefined });
 
     const transport = createMockTransport();
@@ -1141,7 +1236,7 @@ describe('counts', () => {
   });
 
   it('counts compare decisions', async () => {
-    const source = createMockSource(10);
+    const source = createMockSource(10, 5); // two candidates per prompt
     await useReviewStore.getState().load(source, {
       sourceName: 'test.jsonl',
       fingerprint: 'test-fp',
@@ -1169,6 +1264,122 @@ describe('counts', () => {
     expect(counts.tie).toBe(1);
     expect(counts.bothBad).toBe(1);
     expect(counts.reviewed).toBe(4);
+  });
+
+  it("single mode counts a line with a compare decision and no status once, as unreviewed (D-002)", async () => {
+    // Lines 0..3 in two prompts (0,2) and (1,3): compare mode
+    const source = createMockSource(4, 2);
+    await useReviewStore.getState().load(
+      source,
+      { sourceName: 'test.jsonl', fingerprint: 'test-fp', format: { kind: 'unknown' } },
+      {
+        // A format with a distinct prompt per line: single mode
+        regroup: async () => ({
+          groups: new Uint32Array([0, 1, 2, 3]),
+          groupCount: 4,
+          unparseable: new Uint32Array(0),
+          candidates: new Uint16Array([1, 1, 1, 1]),
+        }),
+        dispose: () => {},
+      }
+    );
+    expect(useReviewStore.getState().mode).toBe('compare');
+    useReviewStore.getState().goTo(0);
+    useReviewStore.getState().prefer('left');
+
+    await useReviewStore.getState().setFormat({ kind: 'flat', promptPath: 'p', responsePath: 'r' });
+    expect(useReviewStore.getState().mode).toBe('single');
+
+    // Four lines, none with a status: the next-unreviewed rule treats all four as unreviewed
+    const counts = useReviewStore.getState().counts();
+    expect(counts.total).toBe(4);
+    expect(counts.reviewed).toBe(0);
+    expect(counts.unreviewed).toBe(4);
+  });
+
+  it("a rows source with a preference format falls back to single mode (D-009)", async () => {
+    // WP 5 decision (i): rows sources have no grouping, so compare mode falls back to single
+    const source: RecordSource = {
+      kind: 'rows',
+      container: 'json',
+      count: 2,
+      readRow: async () => ({ chosen: 'a', rejected: 'b' }),
+    };
+    await useReviewStore.getState().load(source, {
+      sourceName: 'test.json',
+      fingerprint: 'rows-fp',
+      format: { kind: 'preference', chosenPath: 'chosen', rejectedPath: 'rejected' },
+    });
+    expect(useReviewStore.getState().mode).toBe('single');
+  });
+
+  // D-003 setups: prompt 0 has a second candidate carrying a status or an edit
+  async function loadRowsKeptOnSecondCandidate() {
+    // Prompt 0 = lines 0 and 2, prompt 1 = lines 1 and 3
+    const source = createMockSource(4, 2);
+    await useReviewStore.getState().load(source, {
+      sourceName: 'test.jsonl',
+      fingerprint: 'test-fp',
+      format: { kind: 'unknown' },
+    });
+    expect(useReviewStore.getState().mode).toBe('compare');
+    useReviewStore.getState().decide('2', 'kept');
+  }
+
+  async function loadInRecordEditOnSecondCandidate() {
+    const source = createMockSource(2);
+    if (source.kind === 'jsonl') source.index.candidates = new Uint16Array([2, 2]);
+    await useReviewStore.getState().load(source, {
+      sourceName: 'test.jsonl',
+      fingerprint: 'test-fp',
+      format: { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'responses' },
+    });
+    expect(useReviewStore.getState().mode).toBe('compare');
+    useReviewStore.getState().edit('0:1', 'responses[1]', 'edited');
+  }
+
+  it("compare mode counts a status on a prompt's second row candidate (D-003)", async () => {
+    await loadRowsKeptOnSecondCandidate();
+    expect(useReviewStore.getState().counts().kept).toBe(1);
+  });
+
+  it("compare mode filters by a status on a prompt's second row candidate (D-003)", async () => {
+    await loadRowsKeptOnSecondCandidate();
+    useReviewStore.getState().goTo(1);
+    useReviewStore.getState().setFilter('kept');
+    useReviewStore.getState().next();
+    expect(useReviewStore.getState().cursor).toBe(0);
+  });
+
+  it("compare mode counts an edit on a prompt's second in-record candidate (D-003)", async () => {
+    await loadInRecordEditOnSecondCandidate();
+    expect(useReviewStore.getState().counts().edited).toBe(1);
+  });
+
+  it("compare mode does not count or filter by a status on an in-record line ref that is not a candidate (D-003)", async () => {
+    const source = createMockSource(2);
+    if (source.kind === 'jsonl') source.index.candidates = new Uint16Array([2, 2]);
+    await useReviewStore.getState().load(source, {
+      sourceName: 'test.jsonl',
+      fingerprint: 'test-fp',
+      format: { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'responses' },
+    });
+    // "0" names line 0's record, not one of prompt 0's candidates ("0:0", "0:1")
+    useReviewStore.getState().decide('0', 'kept');
+    expect(useReviewStore.getState().counts().kept).toBe(0);
+
+    useReviewStore.getState().goTo(1);
+    useReviewStore.getState().setFilter('kept');
+    useReviewStore.getState().next();
+    expect(useReviewStore.getState().cursor).toBe(1);
+  });
+
+  it("compare mode filters by an edit on a prompt's second in-record candidate (D-003)", async () => {
+    await loadInRecordEditOnSecondCandidate();
+    useReviewStore.getState().goTo(1);
+    useReviewStore.getState().setFilter('edited');
+    useReviewStore.getState().next();
+    expect(useReviewStore.getState().cursor).toBe(0);
   });
 });
 
@@ -1217,6 +1428,7 @@ describe('regroup on restore', () => {
 
     // Track regroup calls
     let regroupCalledWith: unknown = null;
+    const regroupCandidates = new Uint16Array([1, 1, 1, 1, 1, 1]);
 
     // Load with different meta.format, passing handle
     await useReviewStore.getState().load(
@@ -1231,7 +1443,12 @@ describe('regroup on restore', () => {
           regroupCalledWith = format;
           // Return grouped: 0,2,4 -> group 0; 1,3,5 -> group 1
           const groups = new Uint32Array([0, 1, 0, 1, 0, 1]);
-          return { groups, groupCount: 2, unparseable: new Uint32Array(0) };
+          return {
+            groups,
+            groupCount: 2,
+            unparseable: new Uint32Array(0),
+            candidates: regroupCandidates,
+          };
         },
         dispose: () => {},
       }
@@ -1248,6 +1465,7 @@ describe('regroup on restore', () => {
     if (source.kind !== 'jsonl') throw new Error('Expected jsonl source');
     expect(source.index.groupCount).toBe(2);
     expect(Array.from(source.index.groups)).toEqual([0, 1, 0, 1, 0, 1]);
+    expect(source.index.candidates).toBe(regroupCandidates); // WP 6c: candidates copied
 
     // Verify store has session's format
     expect(useReviewStore.getState().format).toEqual({
@@ -1265,6 +1483,7 @@ describe('regroup on restore', () => {
 
     // Track regroup calls
     let regroupCalledWith: unknown = null;
+    const regroupCandidates = new Uint16Array([1, 1, 1, 1, 1, 1]);
 
     // Load with unknown format and a handle (handle will be registered)
     await useReviewStore.getState().load(
@@ -1278,7 +1497,12 @@ describe('regroup on restore', () => {
         regroup: async (format) => {
           regroupCalledWith = format;
           const groups = new Uint32Array([0, 1, 0, 1, 0, 1]);
-          return { groups, groupCount: 2, unparseable: new Uint32Array(0) };
+          return {
+            groups,
+            groupCount: 2,
+            unparseable: new Uint32Array(0),
+            candidates: regroupCandidates,
+          };
         },
         dispose: () => {},
       }
@@ -1314,6 +1538,7 @@ describe('regroup on restore', () => {
     if (source.kind !== 'jsonl') throw new Error('Expected jsonl source');
     expect(source.index.groupCount).toBe(2);
     expect(Array.from(source.index.groups)).toEqual([0, 1, 0, 1, 0, 1]);
+    expect(source.index.candidates).toBe(regroupCandidates); // WP 6c: candidates copied
 
     // Verify store has session's format
     expect(useReviewStore.getState().format).toEqual({

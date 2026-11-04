@@ -1,6 +1,8 @@
 /**
  * Shared card component rendering one candidate.
  * WP 6a: Shows status badge, edit indicator, supports raw/rendered view.
+ * WP 6c: Renders the candidate its ref names (i:k for in-record formats) and an
+ * optional badge such as "current best".
  */
 
 import { useMemo, useState } from 'react';
@@ -30,18 +32,29 @@ export interface ReviewCardProps {
   /** Edits from decisions map */
   edits?: Record<string, EditValue>;
   onEdit?: (path: string) => void;
+  /** Optional header badge, e.g. "current best" on a knockout incumbent */
+  badge?: string;
 }
 
 interface ContentRendererProps {
   record: ParsedRecord;
   format: RecordFormat;
+  /** Candidate index k of an "i:k" ref; null for a line ref "i" */
+  candidateIndex: number | null;
   onSelectTurn: (index: number) => void;
   selectedTurnIndex: number | null;
+}
+
+/** k of an "i:k" ref, or null for a line ref. */
+function candidateIndexOf(ref: CandidateRef): number | null {
+  const colon = ref.indexOf(':');
+  return colon === -1 ? null : parseInt(ref.slice(colon + 1), 10);
 }
 
 function ContentRenderer({
   record,
   format,
+  candidateIndex,
   onSelectTurn,
   selectedTurnIndex,
 }: ContentRendererProps) {
@@ -89,14 +102,15 @@ function ContentRenderer({
     }
 
     case 'preference': {
-      // Show the content (either chosen or rejected based on context)
-      // For now, show both
-      const chosen = format.chosenPath
-        ? getByPath(data, parsePath(format.chosenPath))
-        : null;
-      const rejected = format.rejectedPath
-        ? getByPath(data, parsePath(format.rejectedPath))
-        : null;
+      // "i:0" is chosen and "i:1" rejected; a line ref "i" shows both
+      const chosen =
+        format.chosenPath && candidateIndex !== 1
+          ? getByPath(data, parsePath(format.chosenPath))
+          : null;
+      const rejected =
+        format.rejectedPath && candidateIndex !== 0
+          ? getByPath(data, parsePath(format.rejectedPath))
+          : null;
       const hasChosen = chosen !== null && chosen !== undefined;
       const hasRejected = rejected !== null && rejected !== undefined;
       return (
@@ -126,9 +140,10 @@ function ContentRenderer({
       if (!Array.isArray(candidates)) {
         return <div className="text-sm text-muted-foreground">(no candidates)</div>;
       }
+      // "i:k" names candidates[k]; a line ref "i" shows the first, as before
       return (
         <div className="whitespace-pre-wrap text-sm">
-          {String(candidates[0] ?? '')}
+          {renderValue(candidates[candidateIndex ?? 0])}
         </div>
       );
     }
@@ -153,6 +168,7 @@ export function ReviewCard({
   showWhitespace,
   edits,
   onEdit,
+  badge,
 }: ReviewCardProps) {
   const [selectedTurnIndex, setSelectedTurnIndex] = useState<number | null>(null);
 
@@ -170,14 +186,24 @@ export function ReviewCard({
   }, [format, onEdit]);
 
   return (
+    // The keys act on the focused card, so assistive technology must see it as
+    // well as the ring: role="group" puts the card in the accessibility tree and
+    // aria-current marks the current one of the cards shown (D-007)
     <div
       className={`flex flex-col gap-2 rounded-lg border p-4 ${
         focused ? 'ring-2 ring-primary' : ''
       }`}
+      role="group"
+      aria-current={focused ? 'true' : undefined}
       data-candidate-ref={candidateRef}
     >
       {/* Header with status badges */}
       <div className="flex items-center gap-2">
+        {badge && (
+          <span className="text-xs font-medium px-2 py-0.5 rounded bg-primary text-primary-foreground">
+            {badge}
+          </span>
+        )}
         {hasEdits && (
           <span className="text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
             edited
@@ -196,6 +222,7 @@ export function ReviewCard({
           <ContentRenderer
             record={record}
             format={format}
+            candidateIndex={candidateIndexOf(candidateRef)}
             onSelectTurn={handleSelectTurn}
             selectedTurnIndex={selectedTurnIndex}
           />

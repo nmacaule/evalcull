@@ -14,11 +14,13 @@
   "decisions": {
     "0": {
       "status": "unreviewed",
-      "compare": {
-        "left": "0:0",
-        "right": "0:1",
-        "preference": "left"
-      },
+      "compare": [
+        {
+          "left": "0:0",
+          "right": "0:1",
+          "preference": "left"
+        }
+      ],
       "updatedAt": 1730505600000
     }
   },

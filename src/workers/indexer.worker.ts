@@ -17,8 +17,9 @@
  *   { type: 'group', blob: Blob, starts, ends, hasBom, format: RecordFormat }
  *
  * Worker → Main thread (grouping complete):
- *   { type: 'grouped', groups: Uint32Array, groupCount: number, unparseable: Uint32Array }
- *   Transfer list: [groups.buffer, unparseable.buffer]
+ *   { type: 'grouped', groups: Uint32Array, groupCount: number, unparseable: Uint32Array,
+ *     candidates: Uint16Array }   // candidates per line for the format (WP 6c)
+ *   Transfer list: [groups.buffer, unparseable.buffer, candidates.buffer]
  */
 
 import type { RecordFormat } from '../types';
@@ -46,7 +47,13 @@ export type IndexerResponse =
       hasBom: boolean;
       lineCount: number;
     }
-  | { type: 'grouped'; groups: Uint32Array; groupCount: number; unparseable: Uint32Array };
+  | {
+      type: 'grouped';
+      groups: Uint32Array;
+      groupCount: number;
+      unparseable: Uint32Array;
+      candidates: Uint16Array;
+    };
 
 self.onmessage = async (e: MessageEvent<IndexerMessage>) => {
   const msg = e.data;
@@ -84,10 +91,11 @@ self.onmessage = async (e: MessageEvent<IndexerMessage>) => {
       groups: result.groups,
       groupCount: result.groupCount,
       unparseable: result.unparseable,
+      candidates: result.candidates,
     };
 
     self.postMessage(response, {
-      transfer: [result.groups.buffer, result.unparseable.buffer],
+      transfer: [result.groups.buffer, result.unparseable.buffer, result.candidates.buffer],
     });
   }
 };

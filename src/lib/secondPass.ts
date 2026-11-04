@@ -4,15 +4,43 @@
  * Streams blob in chunks, decodes and JSON.parse each line once.
  * Extracts grouping key per format and assigns group IDs.
  * Records unparseable line indices.
+ * WP 6c: records each line's candidate count for the format.
  */
 
 import type { RecordFormat } from '../types';
 import { hash64, GroupIdMap, extractGroupKey } from './groups';
+import { parsePath, getByPath, type PathSegment } from './path';
 
 export interface SecondPassResult {
   unparseable: Uint32Array;
   groups: Uint32Array;
   groupCount: number;
+  candidates: Uint16Array;
+}
+
+/** Largest count a Uint16Array holds. */
+const MAX_CANDIDATES = 65535;
+
+/**
+ * Build the per-line candidate counter for a format (WP 6c).
+ * Row formats: 1. preference: 2. candidates: array length at candidatesPath,
+ * 0 when missing or not an array, capped at 65535. Called for parsed lines only;
+ * an unparseable line is 0.
+ */
+function candidateCounter(format: RecordFormat): (parsed: unknown) => number {
+  if (format.kind === 'preference') return () => 2;
+  if (format.kind !== 'candidates') return () => 1;
+
+  let segments: PathSegment[];
+  try {
+    segments = parsePath(format.candidatesPath);
+  } catch {
+    return () => 0;
+  }
+  return (parsed) => {
+    const value = getByPath(parsed, segments);
+    return Array.isArray(value) ? Math.min(value.length, MAX_CANDIDATES) : 0;
+  };
 }
 
 /**
@@ -37,11 +65,14 @@ export async function secondPass(
       unparseable: new Uint32Array(0),
       groups: new Uint32Array(0),
       groupCount: 0,
+      candidates: new Uint16Array(0),
     };
   }
 
   const unparseable: number[] = [];
   const groups = new Uint32Array(lineCount);
+  const candidates = new Uint16Array(lineCount); // 0 until a line parses
+  const countCandidates = candidateCounter(format);
   const groupIdMap = new GroupIdMap();
 
   // ignoreBOM: true so decoder does NOT auto-strip; we skip bytes explicitly for line 0
@@ -104,6 +135,8 @@ export async function secondPass(
         unparseable.push(lineIdx);
       }
 
+      if (parseOk) candidates[lineIdx] = countCandidates(parsed);
+
       // Assign group ID
       if (!parseOk || !hasGrouping) {
         // Unparseable or no grouping: each line is its own group
@@ -141,5 +174,6 @@ export async function secondPass(
     unparseable: Uint32Array.from(unparseable),
     groups,
     groupCount: groupIdMap.count,
+    candidates,
   };
 }

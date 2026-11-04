@@ -14,6 +14,7 @@ interface PairsFixture {
   expectedPairs: unknown[];
   expectedEditPairs: unknown[];
   expectedImplicitPromptCount?: number;
+  expectedExcluded?: { ties: number; bothBad: number }; // WP 6c, optional
   note?: string;
 }
 
@@ -52,6 +53,12 @@ describe('buildPairs (WP 4)', () => {
     // Check implicit prompt count if specified
     if (fixture.expectedImplicitPromptCount !== undefined) {
       expect(result.implicitPromptCount).toBe(fixture.expectedImplicitPromptCount);
+    }
+
+    // Check excluded pair counts if specified (WP 6c)
+    if (fixture.expectedExcluded !== undefined) {
+      expect(result.excludedTies).toBe(fixture.expectedExcluded.ties);
+      expect(result.excludedBothBad).toBe(fixture.expectedExcluded.bothBad);
     }
   });
 
@@ -182,12 +189,12 @@ describe('buildPairs (WP 4)', () => {
     const decisions = new Map<CandidateRef, Decision>();
     decisions.set('0', {
       status: 'unreviewed',
-      compare: { left: '0:0', right: '0:1', preference: 'left' },
+      compare: [{ left: '0:0', right: '0:1', preference: 'left' }],
       updatedAt: Date.now(),
     });
     decisions.set('1', {
       status: 'unreviewed',
-      compare: { left: '1:0', right: '1:1', preference: 'right' },
+      compare: [{ left: '1:0', right: '1:1', preference: 'right' }],
       updatedAt: Date.now(),
     });
 

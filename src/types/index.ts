@@ -9,6 +9,8 @@ export type RecordSource =
       index: FileIndex;
       readText(i: number): Promise<string>;
       readRaw(i: number): Promise<Blob>;
+      /** Raw bytes of lines from..to inclusive, terminators included, as one slice; line 0 keeps its BOM as in readRaw (owner decision, 4 Nov 2026) */
+      readRawRange(from: number, to: number): Promise<Blob>;
     }
   | {
       kind: 'rows';
@@ -27,6 +29,7 @@ export interface FileIndex {
   groups: Uint32Array;
   groupCount: number;
   unparseable: Uint32Array; // ascending line indices that fail to parse; added 2 Nov 2026
+  candidates: Uint16Array; // candidates per line for the detected format, worker second pass (v3.3, WP 6c)
 }
 
 export type RecordFormat =
@@ -55,7 +58,7 @@ export interface CompareDecision {
 /** Sparse: only touched candidates/prompts have entries. */
 export interface Decision {
   status: DecisionStatus;
-  compare?: CompareDecision;
+  compare?: CompareDecision[]; // present on the prompt entry; one per judged pair, in judgement order (§2.2, v3.3)
   labels?: string[];
   score?: number;
   notes?: string;
@@ -65,14 +68,20 @@ export interface Decision {
 
 export type HistoryAction =
   | { type: 'status'; ref: CandidateRef; before: DecisionStatus; after: DecisionStatus }
-  | { type: 'compare'; ref: CandidateRef; before?: CompareDecision; after?: CompareDecision }
+  | {
+      type: 'compare';
+      ref: CandidateRef;
+      pair: number; // index into compare[] (v3.3)
+      before?: CompareDecision;
+      after?: CompareDecision;
+    }
   | { type: 'edit'; ref: CandidateRef; path: string; before: unknown; after: unknown }
   | { type: 'labels'; ref: CandidateRef; before: string[]; after: string[] }
   | { type: 'score'; ref: CandidateRef; before?: number; after?: number }
   | { type: 'notes'; ref: CandidateRef; before?: string; after?: string };
 
 export interface SessionState {
-  version: 2;
+  version: 3; // v3.3; a version-2 session is migrated on load: compare object → one-element array
   fingerprint: string;
   sourceName: string;
   sourceKind: RecordSource['kind'];

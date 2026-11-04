@@ -56,6 +56,7 @@ function createMockSource(lineCount: number): RecordSource {
     groups,
     groupCount: lineCount,
     unparseable: new Uint32Array(0),
+    candidates: new Uint16Array(lineCount).fill(1),
   };
 
   return {
@@ -63,12 +64,14 @@ function createMockSource(lineCount: number): RecordSource {
     index,
     readText: async (i: number) => JSON.stringify({ line: i }),
     readRaw: async (i: number) => new Blob([JSON.stringify({ line: i })]),
+    readRawRange: async (from: number, to: number) =>
+      new Blob(Array.from({ length: to - from + 1 }, (_, k) => JSON.stringify({ line: from + k }))),
   };
 }
 
 describe('IndexedDB absent', () => {
   it('store still works, storageState shows unavailable after save attempt', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     const source = createMockSource(10);
     await useReviewStore.getState().load(source, {
@@ -145,7 +148,7 @@ describe('IndexedDB absent', () => {
     useReviewStore.getState().decide('0', 'kept');
 
     const exported = useReviewStore.getState().exportSession();
-    expect(exported).toContain('"version": 2');
+    expect(exported).toContain('"version": 3');
     expect(exported).toContain('"kept"');
   });
 });

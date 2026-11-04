@@ -63,12 +63,17 @@ export async function buildExport(
 
     case 'pairs.jsonl':
     case 'pairs.edits.jsonl': {
-      // Pre-fetch records referenced by compare decisions and edits
+      // Pre-fetch the prompt line and every candidate line of each compare
+      // decision (candidates live on their own lines, v3.3), and edited lines
       const refsToFetch = new Set<number>();
 
       for (const [ref, decision] of decisions) {
-        if (decision.compare || (decision.edits && Object.keys(decision.edits).length > 0)) {
+        if (decision.compare?.length || (decision.edits && Object.keys(decision.edits).length > 0)) {
           refsToFetch.add(parseRefLine(ref));
+        }
+        for (const compare of decision.compare ?? []) {
+          refsToFetch.add(parseRefLine(compare.left));
+          refsToFetch.add(parseRefLine(compare.right));
         }
       }
 
@@ -119,7 +124,7 @@ export async function buildExport(
 
     case 'all.decisions.jsonl': {
       // All records, in chunks
-      blob = await exportAllDecisions(source, decisions, record, onProgress);
+      blob = await exportAllDecisions(source, decisions, record, format, onProgress);
 
       const total = source.kind === 'jsonl' ? source.index.lineCount : source.count;
       stats.lineCount = total;

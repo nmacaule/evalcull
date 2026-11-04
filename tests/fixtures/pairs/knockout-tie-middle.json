@@ -1,0 +1,55 @@
+{
+  "description": "Four-candidate knockout with a tie in round 2 → two pairs, one tie excluded",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
+  "records": [
+    {
+      "prompt": "Greet a new colleague",
+      "candidates": ["Hi", "Hello", "Hey there", "Good morning"]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": [
+        {
+          "left": "0:0",
+          "right": "0:1",
+          "preference": "left"
+        },
+        {
+          "left": "0:2",
+          "right": "0:0",
+          "preference": "tie"
+        },
+        {
+          "left": "0:0",
+          "right": "0:3",
+          "preference": "left"
+        }
+      ],
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "prompt": "Greet a new colleague",
+      "chosen": "Hi",
+      "rejected": "Hello"
+    },
+    {
+      "prompt": "Greet a new colleague",
+      "chosen": "Hi",
+      "rejected": "Good morning"
+    }
+  ],
+  "expectedEditPairs": [],
+  "expectedExcluded": {
+    "ties": 1,
+    "bothBad": 0
+  },
+  "note": "Candidate 0 wins round 1. Round 2 (even) puts it on the right against candidate 2 and is a tie, so the incumbent stays and the pair is excluded. Round 3 (odd) puts it on the left against candidate 3; candidate 0 wins."
+}

@@ -1,0 +1,60 @@
+{
+  "description": "Four candidates judged as a knockout in three pairs → three pairs in judgement order",
+  "format": {
+    "kind": "candidates",
+    "promptPath": "prompt",
+    "candidatesPath": "candidates"
+  },
+  "records": [
+    {
+      "prompt": "Greet a new colleague",
+      "candidates": ["Hi", "Hello", "Hey there", "Good morning"]
+    }
+  ],
+  "decisions": {
+    "0": {
+      "status": "unreviewed",
+      "compare": [
+        {
+          "left": "0:0",
+          "right": "0:1",
+          "preference": "right"
+        },
+        {
+          "left": "0:2",
+          "right": "0:1",
+          "preference": "left"
+        },
+        {
+          "left": "0:2",
+          "right": "0:3",
+          "preference": "right"
+        }
+      ],
+      "updatedAt": 1730505600000
+    }
+  },
+  "expectedPairs": [
+    {
+      "prompt": "Greet a new colleague",
+      "chosen": "Hello",
+      "rejected": "Hi"
+    },
+    {
+      "prompt": "Greet a new colleague",
+      "chosen": "Hey there",
+      "rejected": "Hello"
+    },
+    {
+      "prompt": "Greet a new colleague",
+      "chosen": "Good morning",
+      "rejected": "Hey there"
+    }
+  ],
+  "expectedEditPairs": [],
+  "expectedExcluded": {
+    "ties": 0,
+    "bothBad": 0
+  },
+  "note": "Round 1 shows candidate 0 left and 1 right; candidate 1 wins. Round 2 (even) puts the incumbent on the right against candidate 2; candidate 2 wins. Round 3 (odd) puts the incumbent on the left against candidate 3; candidate 3 wins. The stored left/right refs are the refs shown."
+}
