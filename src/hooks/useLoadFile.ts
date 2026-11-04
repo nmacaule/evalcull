@@ -4,8 +4,7 @@
  */
 
 import { useCallback, useState } from 'react';
-import { readJsonl } from '../readers/jsonl';
-import { useReviewStore } from '../store/useReviewStore';
+import { loadJsonlFile } from '../readers/loadJsonlFile';
 
 export interface UseLoadFileReturn {
   /** Whether a file is currently being loaded */
@@ -26,8 +25,6 @@ export function useLoadFile(): UseLoadFileReturn {
     total: number;
   } | null>(null);
 
-  const load = useReviewStore((s) => s.load);
-
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -38,30 +35,9 @@ export function useLoadFile(): UseLoadFileReturn {
       setProgress({ loaded: 0, total: file.size });
 
       try {
-        const result = await readJsonl(
-          file,
-          file.name,
-          file.size,
-          file.lastModified,
-          {
-            onProgress: (bytes, total) => {
-              setProgress({ loaded: bytes, total });
-            },
-          }
-        );
-
-        await load(
-          result.source,
-          {
-            sourceName: file.name,
-            fingerprint: result.source.index.fingerprint,
-            format: result.format,
-          },
-          {
-            regroup: result.regroup,
-            dispose: result.dispose,
-          }
-        );
+        await loadJsonlFile(file, (bytes, total) => {
+          setProgress({ loaded: bytes, total });
+        });
 
         setIsLoading(false);
         setProgress(null);
@@ -74,7 +50,7 @@ export function useLoadFile(): UseLoadFileReturn {
       // Reset input so the same file can be selected again
       e.target.value = '';
     },
-    [load]
+    []
   );
 
   return {

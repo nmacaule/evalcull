@@ -12,8 +12,7 @@ import { HOTKEY_TABLE, getTestableHotkeys } from '../lib/hotkeyTable';
 export interface HotkeyHandlers {
   // Preference actions
   prefer: (p: Preference, strength?: 1 | 2 | 3) => void;
-  getCurrentPreference: () => Preference | undefined;
-  getPreviousPreference: () => Preference | undefined;
+  setStrength: (s: 1 | 2 | 3) => void;
 
   // Decision actions
   decide: (ref: CandidateRef, status: DecisionStatus) => void;
@@ -62,8 +61,7 @@ export interface HotkeyHandlers {
 export function useHotkeys(handlers: HotkeyHandlers): void {
   const {
     prefer,
-    getCurrentPreference,
-    getPreviousPreference,
+    setStrength,
     decide,
     getFocusedRef,
     next,
@@ -178,31 +176,12 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     { enableOnFormTags: false, useKey: true }
   );
 
-  // Preference strength (decision j)
-  // If current prompt has preference, apply strength to it.
-  // Otherwise if previous prompt has preference, go back, apply strength (auto-advances back).
-  // Else no-op.
-  const applyStrength = useCallback(
-    (strength: 1 | 2 | 3) => {
-      const current = getCurrentPreference();
-      if (current) {
-        prefer(current, strength);
-        return;
-      }
-      const previous = getPreviousPreference();
-      if (previous) {
-        prev();
-        prefer(previous, strength);
-      }
-    },
-    [getCurrentPreference, getPreviousPreference, prev, prefer]
-  );
-
+  // Preference strength: attached to the pair just judged (v3.3, WP 6c decision f)
   useHotkeysHook(
     'shift+1',
     () => {
       if (!shouldFire(HOTKEY_TABLE[4])) return;
-      applyStrength(1);
+      setStrength(1);
     },
     { enableOnFormTags: false }
   );
@@ -211,7 +190,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     'shift+2',
     () => {
       if (!shouldFire(HOTKEY_TABLE[5])) return;
-      applyStrength(2);
+      setStrength(2);
     },
     { enableOnFormTags: false }
   );
@@ -220,7 +199,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     'shift+3',
     () => {
       if (!shouldFire(HOTKEY_TABLE[6])) return;
-      applyStrength(3);
+      setStrength(3);
     },
     { enableOnFormTags: false }
   );

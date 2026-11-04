@@ -6,6 +6,57 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SchemaMapper } from '../src/components/SchemaMapper';
 
+describe("SchemaMapper Tab order (D-007)", () => {
+  // Tabbable elements in DOM order, the order Tab visits them when no tabindex is positive
+  const TABBABLE = 'select, input, button, textarea, a[href], [tabindex]:not([tabindex="-1"])';
+
+  function renderFlat() {
+    render(
+      <SchemaMapper
+        open={true}
+        onOpenChange={() => {}}
+        currentFormat={{ kind: 'flat', promptPath: 'prompt', responsePath: 'response' }}
+        sampleRecords={[{ prompt: 'P', response: 'R' }]}
+        onApply={() => {}}
+      />
+    );
+    const dialog = screen.getByRole('dialog');
+    return Array.from(dialog.querySelectorAll<HTMLElement>(TABBABLE)).filter(
+      (el) => !el.hasAttribute('disabled')
+    );
+  }
+
+  function nameOf(el: HTMLElement): string {
+    if (el.id) {
+      const label = document.querySelector(`label[for="${el.id}"]`);
+      if (label) return label.textContent ?? '';
+    }
+    return el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '';
+  }
+
+  it('visits the fields, then the footer buttons, then Close, with no positive tabindex', () => {
+    const tabbable = renderFlat();
+    expect(tabbable.map(nameOf)).toEqual(['Data Shape', 'Prompt Path', 'Response Path', 'Cancel', 'Apply', 'Close']);
+    for (const el of tabbable) {
+      expect(Number(el.getAttribute('tabindex') ?? 0)).toBeLessThanOrEqual(0);
+    }
+  });
+
+  it('keeps Tab inside the dialog: Tab on the last element returns to the first, Shift+Tab on the first goes to the last', () => {
+    const tabbable = renderFlat();
+    const first = tabbable[0];
+    const last = tabbable[tabbable.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab', code: 'Tab', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Tab', code: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false });
+    expect(document.activeElement).toBe(last);
+  });
+});
+
 describe('SchemaMapper', () => {
   const sampleRecords = [
     { messages: [{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi' }] },

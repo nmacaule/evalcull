@@ -1,11 +1,15 @@
 /**
  * Main application component for WP 6a.
  * Integrates CompareView/SingleView, hotkeys, SchemaMapper, and file loading.
+ * WP 6c: Refs name lines — compare mode shows the knockout pair of the
+ * prompt's candidates, each card loaded from its own line; single mode acts
+ * on the line ref "i".
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useReviewStore } from './store/useReviewStore';
-import { formatCandidateRef } from './store/refs';
+import { formatPromptRef, parseRefLine } from './store/refs';
+import { buildGroupLines, deriveKnockout, promptCandidates } from './lib/knockout';
 import { CompareView } from './components/CompareView';
 import { SingleView } from './components/SingleView';
 import { Editor } from './components/Editor';
@@ -16,8 +20,30 @@ import { Button } from '@/components/ui/button';
 import { useLoadFile } from './hooks/useLoadFile';
 import { useHotkeys } from './hooks/useHotkeys';
 import { parsePath, normalisePath, stringifyPath, getByPath } from './lib/path';
-import type { CandidateRef } from './types';
+import type { CandidateRef, RecordFormat } from './types';
 import type { ParsedRecord } from './store/types';
+
+/**
+ * Edit path for the candidate a ref names (WP 6c decision l): the response of a
+ * row candidate "i", candidatesPath[k] for "i:k", chosen/rejected for preference.
+ */
+function editPathFor(ref: CandidateRef, format: RecordFormat): string | null {
+  const colon = ref.indexOf(':');
+  const k = colon === -1 ? null : parseInt(ref.slice(colon + 1), 10);
+  switch (format.kind) {
+    case 'flat':
+      return format.responsePath;
+    case 'messages':
+      // Default to first turn; user can select another turn in the card
+      return `${format.path}[0].${format.contentKey}`;
+    case 'preference':
+      return k === 1 ? format.rejectedPath : format.chosenPath;
+    case 'candidates':
+      return `${format.candidatesPath}[${k ?? 0}]`;
+    default:
+      return null; // Can't edit unknown format
+  }
+}
 
 /** Filter mode values from store */
 type FilterMode =
@@ -43,6 +69,7 @@ function App() {
 
   // Store actions
   const prefer = useReviewStore((s) => s.prefer);
+  const setStrength = useReviewStore((s) => s.setStrength);
   const decide = useReviewStore((s) => s.decide);
   const edit = useReviewStore((s) => s.edit);
   const undo = useReviewStore((s) => s.undo);
@@ -87,58 +114,62 @@ function App() {
   // File loading
   const { isLoading, error: loadError, progress, handleFileChange } = useLoadFile();
 
-  // Compute group size and refs
-  const groupSize = useMemo(() => {
-    if (!source || source.kind !== 'jsonl') return 0;
-    const groups = source.index.groups;
-    const groupId = groups[cursor];
-    let count = 0;
-    for (let i = 0; i < groups.length; i++) {
-      if (groups[i] === groupId) count++;
-    }
-    return count;
-  }, [source, cursor]);
-
-  const leftRef = useMemo(
-    () => (source ? formatCandidateRef(cursor, 0) : ''),
-    [cursor, source]
+  // Candidate model for the prompt at the cursor (compare mode, JSONL)
+  const index = source?.kind === 'jsonl' ? source.index : null;
+  const groups = index?.groups;
+  const groupCount = index?.groupCount ?? 0;
+  const candidatesPerLine = index?.candidates;
+  const groupTable = useMemo(
+    () => (groups ? buildGroupLines(groups, groupCount) : null),
+    [groups, groupCount]
   );
 
-  const rightRef = useMemo(
-    () => (source ? formatCandidateRef(cursor, 1) : ''),
-    [cursor, source]
+  const prompt = useMemo(() => {
+    if (mode !== 'compare' || !groupTable || !candidatesPerLine) return null;
+    if (cursor >= groupCount) return null;
+    return promptCandidates(groupTable, candidatesPerLine, format, cursor);
+  }, [mode, groupTable, candidatesPerLine, groupCount, format, cursor]);
+
+  const knockout = useMemo(
+    () =>
+      prompt
+        ? deriveKnockout(prompt.candidates, decisions.get(prompt.promptRef)?.compare)
+        : null,
+    [prompt, decisions]
   );
 
-  // Load records when cursor changes
+  // N; a prompt with fewer than two candidates is shown as one card (6a decision g)
+  const candidateCount = prompt?.candidates.length ?? 0;
+  const singleCard = mode === 'single' || candidateCount < 2;
+  const groupSize = mode === 'compare' ? candidateCount : 1;
+
+  // Refs name lines: single mode "i"; compare mode the knockout pair shown,
+  // or candidates[0] ?? promptRef for a one-candidate prompt
+  const leftRef: CandidateRef = !source
+    ? ''
+    : mode === 'single'
+      ? formatPromptRef(cursor)
+      : prompt
+        ? (knockout?.shown?.left ?? prompt.candidates[0] ?? prompt.promptRef)
+        : '';
+  const rightRef: CandidateRef = !singleCard && knockout?.shown ? knockout.shown.right : '';
+
+  // Load each shown candidate's own line
   useEffect(() => {
-    if (!source || source.kind !== 'jsonl') return;
+    if (!source || source.kind !== 'jsonl' || !leftRef) return;
 
     const loadRecords = async () => {
       try {
-        const left = await record(cursor);
+        const leftLine = parseRefLine(leftRef);
+        const left = await record(leftLine);
         setLeftRecord(left);
-        setLeftText(await source.readText(cursor));
+        setLeftText(await source.readText(leftLine));
 
-        // For compare mode, load the second candidate if it exists
-        if (mode === 'compare' && groupSize > 1) {
-          // Find the second line in this group
-          const groups = source.index.groups;
-          const groupId = groups[cursor];
-          let rightIndex = -1;
-          for (let i = 0; i < groups.length; i++) {
-            if (groups[i] === groupId && i !== cursor) {
-              rightIndex = i;
-              break;
-            }
-          }
-          if (rightIndex >= 0) {
-            const right = await record(rightIndex);
-            setRightRecord(right);
-            setRightText(await source.readText(rightIndex));
-          } else {
-            setRightRecord(null);
-            setRightText('');
-          }
+        if (rightRef) {
+          const rightLine = parseRefLine(rightRef);
+          const right = await record(rightLine);
+          setRightRecord(right);
+          setRightText(await source.readText(rightLine));
         } else {
           setRightRecord(null);
           setRightText('');
@@ -150,7 +181,7 @@ function App() {
     };
 
     loadRecords();
-  }, [source, cursor, mode, groupSize, record]);
+  }, [source, leftRef, rightRef, record]);
 
   // Auto-open SchemaMapper for unknown format
   useEffect(() => {
@@ -176,52 +207,22 @@ function App() {
     [decisions, rightRef]
   );
 
-  // Get current preference for Shift+1-3
-  const getCurrentPreference = useCallback(() => {
-    const promptRef = formatCandidateRef(cursor, 0);
-    return decisions.get(promptRef)?.compare?.preference;
-  }, [decisions, cursor]);
-
-  // Get previous prompt's preference for Shift+1-3 (decision j)
-  const getPreviousPreference = useCallback(() => {
-    if (cursor <= 0) return undefined;
-    const prevRef = formatCandidateRef(cursor - 1, 0);
-    return decisions.get(prevRef)?.compare?.preference;
-  }, [decisions, cursor]);
-
-  // Get focused ref
+  // Get focused ref: a single card's ref, else the focused side of the pair
   const getFocusedRef = useCallback((): CandidateRef => {
-    if (mode === 'single') return leftRef;
+    if (singleCard) return leftRef;
     return focus === 0 ? leftRef : rightRef;
-  }, [mode, focus, leftRef, rightRef]);
+  }, [singleCard, focus, leftRef, rightRef]);
 
-  // Open editor for focused candidate
+  // Open editor for focused candidate, at the path its ref names
   const openEditor = useCallback(() => {
     if (!leftRecord || (leftRecord && !leftRecord.ok)) return;
 
     const ref = getFocusedRef();
-    const currentRecord = focus === 0 || mode === 'single' ? leftRecord : rightRecord;
+    const currentRecord = focus === 0 || singleCard ? leftRecord : rightRecord;
     if (!currentRecord || !currentRecord.ok) return;
 
-    // Determine path based on format
-    let path: string;
-    switch (format.kind) {
-      case 'flat':
-        path = format.responsePath;
-        break;
-      case 'messages':
-        // Default to first assistant turn; user can select with arrow keys
-        path = `${format.path}[0].${format.contentKey}`;
-        break;
-      case 'preference':
-        path = format.chosenPath || '';
-        break;
-      case 'candidates':
-        path = `${format.candidatesPath}[0]`;
-        break;
-      default:
-        return; // Can't edit unknown format
-    }
+    const path = editPathFor(ref, format);
+    if (path === null) return;
 
     // Get initial value
     try {
@@ -236,7 +237,7 @@ function App() {
     } catch (err) {
       setLastError(`Failed to open editor: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [leftRecord, rightRecord, focus, mode, format, getFocusedRef]);
+  }, [leftRecord, rightRecord, focus, singleCard, format, getFocusedRef]);
 
   // Save editor
   const saveEditor = useCallback(() => {
@@ -257,7 +258,7 @@ function App() {
 
       // Get the record to normalize the path
       const currentRecord =
-        focus === 0 || mode === 'single' ? leftRecord : rightRecord;
+        focus === 0 || singleCard ? leftRecord : rightRecord;
       if (!currentRecord || !currentRecord.ok) return;
 
       // Normalize path (convert negative indices to positive)
@@ -284,7 +285,7 @@ function App() {
         setLastError(`Failed to save edit: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
-    [editing, focus, mode, leftRecord, rightRecord, edit]
+    [editing, focus, singleCard, leftRecord, rightRecord, edit]
   );
 
   // Handle edit confirmation (decision i)
@@ -365,8 +366,7 @@ function App() {
   // Register hotkeys
   useHotkeys({
     prefer,
-    getCurrentPreference,
-    getPreviousPreference,
+    setStrength,
     decide,
     getFocusedRef,
     next,
@@ -528,9 +528,9 @@ function App() {
       {/* Main content */}
       <main className="p-4">
         {mode === 'compare' ? (
-          leftRecord && (groupSize === 1 || rightRecord) ? (
-            groupSize === 1 ? (
-              // One-candidate group in compare mode
+          leftRecord && (singleCard || rightRecord) ? (
+            singleCard || !knockout ? (
+              // Prompt with fewer than two candidates in compare mode
               <div className="max-w-3xl mx-auto">
                 <div className="text-center text-sm text-muted-foreground mb-4">
                   Only one candidate for this prompt
@@ -560,7 +560,8 @@ function App() {
                 format={format}
                 showRaw={showRaw}
                 showWhitespace={showWhitespace}
-                groupSize={groupSize}
+                knockout={knockout}
+                candidateCount={candidateCount}
                 onEdit={handleCardEdit}
               />
             )

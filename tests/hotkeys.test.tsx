@@ -68,10 +68,9 @@ function TestHarness({
 }: TestHarnessProps) {
   const defaultHandlers: HotkeyHandlers = {
     prefer: vi.fn(),
-    getCurrentPreference: vi.fn(),
-    getPreviousPreference: vi.fn(),
+    setStrength: vi.fn(),
     decide: vi.fn(),
-    getFocusedRef: vi.fn(() => '0:0'),
+    getFocusedRef: vi.fn(() => '0'),
     next: vi.fn(),
     prev: vi.fn(),
     toggleFocus: vi.fn(),
@@ -203,50 +202,38 @@ describe('hotkeys', () => {
     });
 
     describe('strength keys (compare mode)', () => {
-      it.each(strengthKeys)('$key sets strength with current preference', (entry) => {
+      // WP 6c decision f: Shift+1–3 attach strength to the pair just judged
+      it.each(strengthKeys)('$key fires setStrength($args)', (entry) => {
+        const setStrength = vi.fn();
         const prefer = vi.fn();
-        const getCurrentPreference = vi.fn(() => 'left' as const);
-        const getPreviousPreference = vi.fn(() => undefined);
-        render(<TestHarness mode="compare" handlers={{ prefer, getCurrentPreference, getPreviousPreference }} />);
+        const prev = vi.fn();
+        render(<TestHarness mode="compare" handlers={{ setStrength, prefer, prev }} />);
 
         pressKey(entry.key);
-        expect(getCurrentPreference).toHaveBeenCalled();
-        expect(prefer).toHaveBeenCalledWith('left', entry.args![0]);
+        expect(setStrength).toHaveBeenCalledWith(entry.args![0]);
+        expect(prefer).not.toHaveBeenCalled();
+        expect(prev).not.toHaveBeenCalled();
       });
 
-      it('strength keys fallback to previous preference (decision j)', () => {
-        const prefer = vi.fn();
-        const prev = vi.fn();
-        const getCurrentPreference = vi.fn(() => undefined);
-        const getPreviousPreference = vi.fn(() => 'right' as const);
-        render(<TestHarness mode="compare" handlers={{ prefer, prev, getCurrentPreference, getPreviousPreference }} />);
-
-        pressKey('Shift+2');
-        expect(prev).toHaveBeenCalled();
-        expect(prefer).toHaveBeenCalledWith('right', 2);
-      });
-
-      it('strength keys are no-op when no current or previous preference', () => {
-        const prefer = vi.fn();
-        const prev = vi.fn();
-        const getCurrentPreference = vi.fn(() => undefined);
-        const getPreviousPreference = vi.fn(() => undefined);
-        render(<TestHarness mode="compare" handlers={{ prefer, prev, getCurrentPreference, getPreviousPreference }} />);
+      it('strength keys are no-op in single mode', () => {
+        const setStrength = vi.fn();
+        render(<TestHarness mode="single" handlers={{ setStrength }} />);
 
         pressKey('Shift+1');
-        expect(prev).not.toHaveBeenCalled();
-        expect(prefer).not.toHaveBeenCalled();
+        pressKey('Shift+2');
+        pressKey('Shift+3');
+        expect(setStrength).not.toHaveBeenCalled();
       });
     });
 
     describe('decision keys (both modes)', () => {
       it.each(decisionKeys)('$key fires decide(ref, $args) in single mode', (entry) => {
         const decide = vi.fn();
-        const getFocusedRef = vi.fn(() => '5:0');
+        const getFocusedRef = vi.fn(() => '5');
         render(<TestHarness mode="single" handlers={{ decide, getFocusedRef }} />);
 
         pressKey(entry.key);
-        expect(decide).toHaveBeenCalledWith('5:0', entry.args![0]);
+        expect(decide).toHaveBeenCalledWith('5', entry.args![0]);
       });
 
       it.each(decisionKeys)('$key fires decide(ref, $args) in compare mode', (entry) => {

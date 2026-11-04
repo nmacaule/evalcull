@@ -11,7 +11,7 @@ import { IDBFactory } from 'fake-indexeddb';
 
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar } from '../src/store/persistence';
-import { formatCandidateRef } from '../src/store/refs';
+import { formatPromptRef } from '../src/store/refs'; // single mode acts on line refs "i" (WP 6c)
 import { exportLines } from '../src/export/exportLines';
 import { parsePath, normalisePath, stringifyPath, getByPath } from '../src/lib/path';
 import type { RecordFormat, RecordSource, FileIndex } from '../src/types';
@@ -76,6 +76,7 @@ function createMockSourceFromFixture(): {
     groups,
     groupCount: lineCount,
     unparseable: new Uint32Array(0),
+    candidates: new Uint16Array(lineCount).fill(1),
   };
 
   const source: Extract<RecordSource, { kind: 'jsonl' }> = {
@@ -83,6 +84,7 @@ function createMockSourceFromFixture(): {
     index,
     readText: async (i: number) => lines[i],
     readRaw: async (i: number) => new Blob([lines[i] + '\n']),
+    readRawRange: async (from: number, to: number) => new Blob(lines.slice(from, to + 1).map((l) => l + '\n')),
   };
 
   return { source, lines };
@@ -129,7 +131,7 @@ describe('edit flow', () => {
       });
 
       const { edit } = useReviewStore.getState();
-      const ref = formatCandidateRef(0, 0);
+      const ref = formatPromptRef(0);
       const path = 'output';
       const newValue = 'Four';
 
@@ -152,7 +154,7 @@ describe('edit flow', () => {
       });
 
       const { edit } = useReviewStore.getState();
-      const ref = formatCandidateRef(0, 0);
+      const ref = formatPromptRef(0);
       const path = 'output';
 
       // First add an edit
@@ -177,7 +179,7 @@ describe('edit flow', () => {
       });
 
       const { edit } = useReviewStore.getState();
-      const ref = formatCandidateRef(0, 0);
+      const ref = formatPromptRef(0);
 
       edit(ref, 'output', 'Four');
 
@@ -195,7 +197,7 @@ describe('edit flow', () => {
         format: flatFormat,
       });
 
-      const ref = formatCandidateRef(0, 0);
+      const ref = formatPromptRef(0);
       const path = 'output';
 
       // Make an edit
@@ -261,7 +263,7 @@ describe('edit flow', () => {
         format: flatFormat,
       });
 
-      const ref = formatCandidateRef(0, 0);
+      const ref = formatPromptRef(0);
       const path = 'output';
       const newValue = 'Four';
 
@@ -296,9 +298,9 @@ describe('edit flow', () => {
       });
 
       // Edit multiple lines
-      useReviewStore.getState().edit(formatCandidateRef(0, 0), 'output', 'Four');
-      useReviewStore.getState().edit(formatCandidateRef(1, 0), 'output', 'Lyon');
-      useReviewStore.getState().edit(formatCandidateRef(2, 0), 'output', 'Blue');
+      useReviewStore.getState().edit(formatPromptRef(0), 'output', 'Four');
+      useReviewStore.getState().edit(formatPromptRef(1), 'output', 'Lyon');
+      useReviewStore.getState().edit(formatPromptRef(2), 'output', 'Blue');
 
       const decisions = useReviewStore.getState().decisions;
       const output = await exportLines(source, decisions, () => true, { bom: 'keep' });
@@ -325,7 +327,7 @@ describe('edit flow', () => {
       });
 
       // Only edit first line
-      useReviewStore.getState().edit(formatCandidateRef(0, 0), 'output', 'Four');
+      useReviewStore.getState().edit(formatPromptRef(0), 'output', 'Four');
 
       const decisions = useReviewStore.getState().decisions;
       const output = await exportLines(source, decisions, () => true, { bom: 'keep' });

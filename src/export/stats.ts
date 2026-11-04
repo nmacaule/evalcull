@@ -77,11 +77,12 @@ export function computeExportStats(
   let implicitPromptCount = 0;
 
   if (name === 'pairs.jsonl') {
+    // One count per judged pair (v3.3)
     for (const [, decision] of decisions) {
-      if (decision.compare) {
-        if (decision.compare.preference === 'tie') {
+      for (const compare of decision.compare ?? []) {
+        if (compare.preference === 'tie') {
           tiesExcluded++;
-        } else if (decision.compare.preference === 'both_bad') {
+        } else if (compare.preference === 'both_bad') {
           bothBadExcluded++;
         } else {
           pairsCount++;

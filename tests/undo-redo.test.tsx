@@ -10,7 +10,7 @@ import { IDBFactory } from 'fake-indexeddb';
 
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar } from '../src/store/persistence';
-import { formatCandidateRef, parseRefLine } from '../src/store/refs';
+import { formatPromptRef, parseRefLine } from '../src/store/refs'; // single mode acts on line refs "i" (WP 6c)
 import type { RecordSource, FileIndex, RecordFormat } from '../src/types';
 
 // -----------------------------------------------------------------------------
@@ -33,6 +33,7 @@ function createMockSource(lineCount: number): RecordSource {
     groups,
     groupCount: lineCount,
     unparseable: new Uint32Array(0),
+    candidates: new Uint16Array(lineCount).fill(1),
   };
 
   return {
@@ -40,6 +41,8 @@ function createMockSource(lineCount: number): RecordSource {
     index,
     readText: async (i: number) => JSON.stringify({ instruction: `Prompt ${i}`, output: `Response ${i}` }),
     readRaw: async (i: number) => new Blob([JSON.stringify({ instruction: `Prompt ${i}`, output: `Response ${i}` })]),
+    readRawRange: async (from: number, to: number) =>
+      new Blob(Array.from({ length: to - from + 1 }, (_, k) => JSON.stringify({ instruction: `Prompt ${from + k}`, output: `Response ${from + k}` }))),
   };
 }
 
@@ -91,7 +94,7 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make a decision at prompt 0
-      const ref0 = formatCandidateRef(0, 0);
+      const ref0 = formatPromptRef(0);
       useReviewStore.getState().decide(ref0, 'kept');
 
       // Decision auto-advances cursor; navigate further away
@@ -121,7 +124,7 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make a decision at prompt 3 (auto-advances to 4)
-      const ref3 = formatCandidateRef(3, 0);
+      const ref3 = formatPromptRef(3);
       useReviewStore.getState().decide(ref3, 'rejected');
       expect(useReviewStore.getState().cursor).toBe(4); // auto-advanced
 
@@ -147,13 +150,13 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make decisions at prompts 0, 2, 4
-      useReviewStore.getState().decide(formatCandidateRef(0, 0), 'kept');
+      useReviewStore.getState().decide(formatPromptRef(0), 'kept');
       // Auto-advances to 1
       useReviewStore.getState().next(); // to 2
-      useReviewStore.getState().decide(formatCandidateRef(2, 0), 'rejected');
+      useReviewStore.getState().decide(formatPromptRef(2), 'rejected');
       // Auto-advances to 3
       useReviewStore.getState().next(); // to 4
-      useReviewStore.getState().decide(formatCandidateRef(4, 0), 'skipped');
+      useReviewStore.getState().decide(formatPromptRef(4), 'skipped');
 
       // Navigate to end
       useReviewStore.getState().next();
@@ -186,7 +189,7 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make a decision and undo it
-      const ref0 = formatCandidateRef(0, 0);
+      const ref0 = formatPromptRef(0);
       useReviewStore.getState().decide(ref0, 'kept');
       useReviewStore.getState().undo();
 
@@ -216,9 +219,9 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make decisions
-      useReviewStore.getState().decide(formatCandidateRef(2, 0), 'kept');
+      useReviewStore.getState().decide(formatPromptRef(2), 'kept');
       useReviewStore.getState().next(); // to 4
-      useReviewStore.getState().decide(formatCandidateRef(4, 0), 'rejected');
+      useReviewStore.getState().decide(formatPromptRef(4), 'rejected');
 
       // Undo both
       useReviewStore.getState().undo(); // undoes 4
@@ -247,7 +250,7 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make an edit at prompt 3
-      const ref3 = formatCandidateRef(3, 0);
+      const ref3 = formatPromptRef(3);
       useReviewStore.getState().edit(ref3, 'output', 'Edited value');
 
       // Navigate away
@@ -273,7 +276,7 @@ describe('undo/redo cursor movement', () => {
       });
 
       // Make an edit and undo it
-      const ref5 = formatCandidateRef(5, 0);
+      const ref5 = formatPromptRef(5);
       useReviewStore.getState().edit(ref5, 'output', 'New value');
       useReviewStore.getState().undo();
 
@@ -313,9 +316,12 @@ describe('undo/redo cursor movement', () => {
           groups,
           groupCount,
           unparseable: new Uint32Array(0),
+          candidates: new Uint16Array(lineCount).fill(1),
         },
         readText: async (i: number) => JSON.stringify({ line: i }),
         readRaw: async (i: number) => new Blob([JSON.stringify({ line: i })]),
+        readRawRange: async (from: number, to: number) =>
+          new Blob(Array.from({ length: to - from + 1 }, (_, k) => JSON.stringify({ line: from + k }))),
       };
 
       useReviewStore.setState({

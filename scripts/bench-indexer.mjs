@@ -5,120 +5,26 @@
  * Generates a temporary file, runs the indexer, prints elapsed time, deletes the file.
  * Not part of CI — timing there is unreliable.
  *
- * This script contains an inlined copy of the scan loop from src/lib/indexer.ts
- * for timing purposes only. If the indexer logic changes, this must be updated
- * to match, or the benchmark will measure stale code.
+ * The two passes it times are inlined copies of the indexer's, in
+ * scripts/bench-inline.mjs; tests/bench-parity.test.ts fails when they drift
+ * from src/lib/indexer.ts and src/lib/secondPass.ts.
  *
  * Usage: node scripts/bench-indexer.mjs
  */
 
-import { openSync, writeSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import {
+  openSync,
+  writeSync,
+  closeSync,
+  readFileSync,
+  unlinkSync,
+  existsSync,
+  mkdirSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Blob } from 'node:buffer';
-
-// -----------------------------------------------------------------------------
-// Inlined indexer logic (mirrors src/lib/indexer.ts — for timing only)
-// -----------------------------------------------------------------------------
-
-class GrowableFloat64Array {
-  constructor(initialCapacity = 1024) {
-    this.buffer = new Float64Array(initialCapacity);
-    this._length = 0;
-  }
-  get length() { return this._length; }
-  push(value) {
-    if (this._length === this.buffer.length) {
-      const newBuffer = new Float64Array(this.buffer.length * 2);
-      newBuffer.set(this.buffer);
-      this.buffer = newBuffer;
-    }
-    this.buffer[this._length++] = value;
-  }
-  trim() {
-    return this._length === this.buffer.length
-      ? this.buffer
-      : this.buffer.subarray(0, this._length);
-  }
-}
-
-class GrowableUint8Array {
-  constructor(initialCapacity = 1024) {
-    this.buffer = new Uint8Array(initialCapacity);
-    this._length = 0;
-  }
-  get length() { return this._length; }
-  push(value) {
-    if (this._length === this.buffer.length) {
-      const newBuffer = new Uint8Array(this.buffer.length * 2);
-      newBuffer.set(this.buffer);
-      this.buffer = newBuffer;
-    }
-    this.buffer[this._length++] = value;
-  }
-  trim() {
-    return this._length === this.buffer.length
-      ? this.buffer
-      : this.buffer.subarray(0, this._length);
-  }
-}
-
-async function indexBlob(blob, onProgress) {
-  const starts = new GrowableFloat64Array();
-  const ends = new GrowableFloat64Array();
-  const eols = new GrowableUint8Array();
-
-  // Detect BOM from the first 3 bytes before scanning
-  let hasBom = false;
-  if (blob.size >= 3) {
-    const first3 = new Uint8Array(await blob.slice(0, 3).arrayBuffer());
-    hasBom = first3[0] === 0xef && first3[1] === 0xbb && first3[2] === 0xbf;
-  }
-
-  let pos = 0;
-  let lineStart = 0;
-  let prevCR = false;
-
-  const reader = blob.stream().getReader();
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    for (let i = 0; i < value.length; i++) {
-      const b = value[i];
-      if (b === 0x0a) {
-        const abs = pos + i;
-        starts.push(lineStart);
-        ends.push(prevCR ? abs - 1 : abs);
-        eols.push(prevCR ? 2 : 1);
-        lineStart = abs + 1;
-      }
-      prevCR = b === 0x0d;
-    }
-
-    pos += value.length;
-
-    if (onProgress) {
-      onProgress({ bytes: pos, total: blob.size });
-    }
-  }
-
-  // Last line without trailing newline
-  if (lineStart < pos) {
-    starts.push(lineStart);
-    ends.push(pos);
-    eols.push(0);
-  }
-
-  return {
-    starts: starts.trim(),
-    ends: ends.trim(),
-    eols: eols.trim(),
-    hasBom,
-    lineCount: starts.length,
-  };
-}
+import { indexBlob, secondPassInline } from './bench-inline.mjs';
 
 // -----------------------------------------------------------------------------
 // Benchmark
@@ -128,7 +34,16 @@ const TARGET_SIZE = 100 * 1024 * 1024; // 100 MB
 const LINE = '{"id":12345,"text":"This is a sample line for benchmarking the JSONL indexer performance."}\n';
 const LINE_BYTES = Buffer.from(LINE);
 
-const tempFile = join(tmpdir(), `bench-indexer-${Date.now()}.jsonl`);
+// Scratch files stay inside the repository: node_modules/.tmp is git-ignored.
+// It exists only after a tsc -b build, so create it.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const tempFile = join(repoRoot, 'node_modules', '.tmp', 'bench-indexer.jsonl');
+mkdirSync(dirname(tempFile), { recursive: true });
+
+// Remove the 100 MB file however the run ends, a failed run included
+process.on('exit', () => {
+  if (existsSync(tempFile)) unlinkSync(tempFile);
+});
 
 console.log('Generating 100 MB JSONL file...');
 const startGen = performance.now();
@@ -165,140 +80,19 @@ console.log(`  Lines: ${result.lineCount.toLocaleString()}`);
 console.log(`  Has BOM: ${result.hasBom}`);
 console.log(`  First pass: ${indexTime.toFixed(0)} ms`);
 
-// -----------------------------------------------------------------------------
-// Inlined grouping logic (mirrors src/lib/groups.ts per-line cost only)
-// -----------------------------------------------------------------------------
-
-function fnv1a32(str) {
-  let hash = 2166136261;
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function djb2(str) {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
-  }
-  return hash >>> 0;
-}
-
-class GroupIdMap {
-  constructor() {
-    this.map = new Map();
-    this.nextId = 0;
-  }
-  getOrCreate(hi, lo) {
-    let inner = this.map.get(hi);
-    if (!inner) {
-      inner = new Map();
-      this.map.set(hi, inner);
-    }
-    let id = inner.get(lo);
-    if (id === undefined) {
-      id = this.nextId++;
-      inner.set(lo, id);
-    }
-    return id;
-  }
-  get count() {
-    return this.nextId;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Second pass: decode + parse + group (mirrors src/lib/secondPass.ts)
-// -----------------------------------------------------------------------------
-
+// Second pass: decode + parse + group
 console.log('Running second pass (decode + parse + group)...');
 const startSecond = performance.now();
-
-// ignoreBOM: true so decoder does NOT auto-strip; BOM skipped via byte offset for line 0
-const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
-const unparseable = [];
-const groups = new Uint32Array(result.lineCount);
-const groupIdMap = new GroupIdMap();
-
-// Stream the blob in chunks, same pattern as first pass
-const reader2 = blob.stream().getReader();
-let buffer = new Uint8Array(0);
-let bufferStart = 0;
-let lineIdx = 0;
-
-for (;;) {
-  const { value, done } = await reader2.read();
-
-  if (value) {
-    const newBuffer = new Uint8Array(buffer.length + value.length);
-    newBuffer.set(buffer);
-    newBuffer.set(value, buffer.length);
-    buffer = newBuffer;
-  }
-
-  while (lineIdx < result.lineCount) {
-    const lineStart = result.starts[lineIdx];
-    const lineEnd = result.ends[lineIdx];
-    const localStart = lineStart - bufferStart;
-    const localEnd = lineEnd - bufferStart;
-
-    if (localEnd > buffer.length) break;
-
-    let lineBytes;
-    if (lineIdx === 0 && result.hasBom && localStart === 0) {
-      lineBytes = buffer.subarray(Math.max(localStart, 3), localEnd);
-    } else {
-      lineBytes = buffer.subarray(localStart, localEnd);
-    }
-
-    const text = decoder.decode(lineBytes);
-    let parsed;
-    let parseOk = false;
-
-    try {
-      parsed = JSON.parse(text);
-      parseOk = true;
-    } catch {
-      unparseable.push(lineIdx);
-    }
-
-    // Assign group ID (mirrors secondPass per-line cost)
-    // Generated data has { id, text }; key = String(parsed.id)
-    if (!parseOk) {
-      groups[lineIdx] = groupIdMap.getOrCreate(lineIdx, 0);
-    } else {
-      const key = String(parsed.id);
-      const hi = djb2(key);
-      const lo = fnv1a32(key);
-      groups[lineIdx] = groupIdMap.getOrCreate(hi, lo);
-    }
-
-    lineIdx++;
-  }
-
-  if (lineIdx > 0 && lineIdx <= result.lineCount) {
-    const lastProcessedEnd = lineIdx < result.lineCount ? result.ends[lineIdx - 1] : result.ends[result.lineCount - 1];
-    const trimPoint = lastProcessedEnd - bufferStart;
-    if (trimPoint > 0 && trimPoint <= buffer.length) {
-      buffer = buffer.subarray(trimPoint);
-      bufferStart = lastProcessedEnd;
-    }
-  }
-
-  if (done) break;
-}
-
+const second = await secondPassInline(blob, result);
 const secondPassTime = performance.now() - startSecond;
 console.log(`  Second pass: ${secondPassTime.toFixed(0)} ms`);
-console.log(`  Unparseable: ${unparseable.length}`);
-console.log(`  Groups: ${groupIdMap.count.toLocaleString()}`);
+console.log(`  Unparseable: ${second.unparseable.length}`);
+console.log(`  Groups: ${second.groupCount.toLocaleString()}`);
 
 const totalTime = indexTime + secondPassTime;
 console.log(`  Total: ${totalTime.toFixed(0)} ms`);
 
-// Cleanup
+// Cleanup (the exit handler also removes the file if the run fails before here)
 unlinkSync(tempFile);
 console.log('\nTemp file deleted.');
 
