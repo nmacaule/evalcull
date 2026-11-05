@@ -601,3 +601,95 @@ describe('pairs.jsonl per judged pair (WP 6c)', () => {
     }
   );
 });
+
+describe('all.decisions.jsonl exclude unparseable (D-022)', () => {
+  it('all.decisions.jsonl leaves out unparseable lines when asked (D-022)', async () => {
+    // tests/fixtures/jsonl/malformed.jsonl, its unparseable lines as malformed.meta.json declares
+    const dir = join(import.meta.dirname, 'fixtures', 'jsonl');
+    const meta = JSON.parse(readFileSync(join(dir, 'malformed.meta.json'), 'utf-8'));
+    const lines = readFileSync(join(dir, 'malformed.jsonl'), 'utf-8').split('\n').slice(0, meta.lineCount);
+    const bad = (meta.parseable as boolean[]).flatMap((ok, i) => (ok ? [] : [i]));
+    expect(bad).toEqual([1]);
+    const source = createMockJsonlSource(lines.map(() => null), bad);
+    const record = async (i: number): Promise<ParsedRecord> =>
+      bad.includes(i)
+        ? { index: i, ok: false, error: 'Unexpected end', raw: lines[i] }
+        : { index: i, ok: true, data: { valid: true } };
+    const format: RecordFormat = { kind: 'unknown' };
+    const decisions = new Map<CandidateRef, Decision>();
+
+    const result = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions,
+      format,
+      record,
+      opts: { excludeUnparseable: true },
+    });
+    const preview = computeExportStats('all.decisions.jsonl', source, decisions, format, {
+      excludeUnparseable: true,
+    });
+
+    expect(await blobToString(result.blob)).toBe(
+      '{"valid":true,"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n'
+    );
+    expect(result.stats.lineCount).toBe(1);
+    expect(result.stats.unparseableExcluded).toBe(1);
+    expect(preview.lineCount).toBe(1);
+  });
+});
+
+describe('all.decisions.jsonl non-object records (D-023)', () => {
+  it('all.decisions.jsonl keeps a non-object record (D-023)', async () => {
+    const records: unknown[] = [5, [1, 2], null, 'abc'];
+    const source = createMockJsonlSource(records);
+
+    const result = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions: new Map(),
+      format: { kind: 'unknown' },
+      record: createRecordFn(records),
+    });
+
+    expect(await blobToString(result.blob)).toBe(
+      '{"_value":5,"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n' +
+        '{"_value":[1,2],"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n' +
+        '{"_value":null,"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n' +
+        '{"_value":"abc","_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n'
+    );
+  });
+});
+
+describe('all.decisions.jsonl edits applied (D-028)', () => {
+  it('all.decisions.jsonl writes each record with its edits applied (D-028)', async () => {
+    const flat = [{ instruction: 'q', output: 'red' }];
+    const flatResult = await buildExport('all.decisions.jsonl', {
+      source: createMockJsonlSource(flat),
+      decisions: new Map<CandidateRef, Decision>([
+        ['0', { status: 'unreviewed', edits: { output: 'crimson' }, updatedAt: 1000 }],
+      ]),
+      format: { kind: 'flat', promptPath: 'instruction', responsePath: 'output' },
+      record: createRecordFn(flat),
+    });
+    expect(await blobToString(flatResult.blob)).toBe(
+      '{"instruction":"q","output":"crimson","_triage":{"status":"unreviewed","edited":true,"updatedAt":1000}}\n'
+    );
+  });
+
+  it('all.decisions.jsonl applies an edit made under an in-record ref and marks the line edited (D-028)', async () => {
+    const inRecord = [{ q: 'x', c: ['a', 'b'] }];
+    const source = createMockJsonlSource(inRecord);
+    source.index.candidates = Uint16Array.of(2);
+    const inRecordResult = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions: new Map<CandidateRef, Decision>([
+        ['0:1', { status: 'unreviewed', edits: { 'c[1]': 'B' }, updatedAt: 1000 }],
+      ]),
+      format: { kind: 'candidates', promptPath: 'q', candidatesPath: 'c' },
+      record: createRecordFn(inRecord),
+    });
+    expect(await blobToString(inRecordResult.blob)).toBe(
+      '{"q":"x","c":["a","B"],"_triage":{"status":"unreviewed","edited":true,"updatedAt":0,' +
+        '"candidates":{"1":{"status":"unreviewed","edited":true,"updatedAt":1000}}}}\n'
+    );
+  });
+});

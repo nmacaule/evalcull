@@ -1,9 +1,11 @@
 /**
  * Edit confirmation view showing original vs edited side-by-side.
  * WP 6a decision (i): user confirms or discards edit with arrow keys.
+ * WP 6b: the two values as a line diff (PRD §2.5).
  */
 
 import { Button } from '@/components/ui/button';
+import { DiffView } from '../DiffView';
 
 export interface EditConfirmViewProps {
   originalValue: string;
@@ -30,20 +32,8 @@ export function EditConfirmView({
           to discard, or <kbd className="px-1 py-0.5 bg-muted rounded">Esc</kbd> to
           dismiss.
         </p>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="border rounded-lg p-4">
-            <h3 className="text-sm font-medium mb-2">Original</h3>
-            <pre className="whitespace-pre-wrap text-sm bg-muted/50 p-2 rounded">
-              {originalValue}
-            </pre>
-          </div>
-          <div className="border rounded-lg p-4 ring-2 ring-primary">
-            <h3 className="text-sm font-medium mb-2">Edited</h3>
-            <pre className="whitespace-pre-wrap text-sm bg-muted/50 p-2 rounded">
-              {editedValue}
-            </pre>
-          </div>
-        </div>
+        <DiffView original={originalValue} edited={editedValue} />
+
         <div className="mt-4 flex gap-2">
           <Button onClick={onKeep}>
             Keep Edit ({'\u2192'})

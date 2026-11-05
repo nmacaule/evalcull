@@ -29,7 +29,8 @@ export interface SidecarTransport {
   get(): Promise<string | null>;
   put(
     text: string,
-    opts?: { keepalive?: boolean }
+    // signal: aborted when the PUT times out, so a late request cannot land (D-040)
+    opts?: { keepalive?: boolean; signal?: AbortSignal }
   ): Promise<{ ok: true } | { ok: false; status: number; message: string }>;
 }
 
@@ -67,6 +68,8 @@ export function configureStorage(config: {
 }): void {
   configuredIndexedDB = config.indexedDB;
   dbPromise = null;
+  // The latest copies recorded describe the previous factory's database (D-066)
+  latestCopy.clear();
 }
 
 /**
@@ -148,6 +151,27 @@ export async function saveToIndexedDB(
   } catch (err) {
     return { ok: false, reason: String(err) };
   }
+}
+
+// Session texts are numbered in the order they are taken; the number of the
+// latest copy written at a file switch is kept per fingerprint, so a slower
+// save still holding older text does not overwrite it when it finishes (D-036).
+// A counter, not the clock: two texts can be taken in the same millisecond.
+// The entry also holds that copy's own write, so a save that finds itself
+// superseded writes its text after all when that write failed (D-053); the
+// write is a direct IndexedDB call, never queued behind the save chain
+let textSeq = 0;
+const latestCopy = new Map<string, { seq: number; written: Promise<boolean> }>();
+
+/** Write the session's latest text to IndexedDB at a file switch (D-036). */
+export async function saveLatestToIndexedDB(
+  fingerprint: string,
+  text: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const seq = ++textSeq;
+  const write = saveToIndexedDB(fingerprint, text);
+  latestCopy.set(fingerprint, { seq, written: write.then((r) => r.ok) });
+  return write;
 }
 
 // -----------------------------------------------------------------------------
@@ -666,11 +690,16 @@ function notifySavePending(): void {
 }
 
 const DEBOUNCE_MS = 500;
+// A sidecar PUT that has not answered by then counts as failed, so one hung
+// request cannot hold the one-in-flight chain forever (D-035, PRD §2.7)
+const SIDECAR_PUT_TIMEOUT_MS = 10_000;
 // A run of changes closer together than the debounce still saves this soon
 // after the first of them (WP 3 decision f, D-010)
 const MAX_WAIT_MS = 2000;
 // When the oldest change not yet handed to a save was made; null when none is pending
 let pendingSince: number | null = null;
+// The context of the debounced save, so a flush can run it at once (D-029)
+let scheduledCtx: SaveContext | null = null;
 
 function clearPendingSaves(): void {
   if (pendingSaveTimeout) {
@@ -678,6 +707,7 @@ function clearPendingSaves(): void {
     pendingSaveTimeout = null;
   }
   pendingSince = null;
+  scheduledCtx = null;
   // Clear pending follow-up but don't abort in-flight write
   dirtyDuringWrite = false;
   pendingCtx = null;
@@ -705,6 +735,8 @@ export interface SaveContext {
   onSaved: (savedAt: number) => void;
   onError: (reason: string) => void;
   onIDBUnavailable: (reason: string) => void;
+  /** This save's text reached the sidecar or IndexedDB (DR-001 rule 3) */
+  onPersisted?: () => void;
 }
 
 /**
@@ -720,6 +752,7 @@ async function executeSave(
 
   // Serialize once (reads latest state)
   const text = ctx.getText();
+  const seq = ++textSeq;
   const savedAt = Date.now();
 
   // On page close the PUT may be cut off, so the local write starts first (D-005 B)
@@ -727,18 +760,45 @@ async function executeSave(
 
   // PUT to sidecar if configured (authoritative)
   let sidecarResult: { ok: true } | { ok: false; status: number; message: string } | null = null;
+  let sidecarTimedOut = false;
   if (sidecarTransport) {
-    sidecarResult = await sidecarTransport.put(text, { keepalive: opts?.keepalive });
-    if (ctx.generation !== saveGeneration) return;
+    // The timeout also aborts the request, so a PUT that lands late cannot
+    // leave the sidecar older than a later save (D-040)
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        resolve(null);
+      }, SIDECAR_PUT_TIMEOUT_MS);
+    });
+    const answer = await Promise.race([
+      sidecarTransport.put(text, { keepalive: opts?.keepalive, signal: abort.signal }),
+      timeout,
+    ]);
+    clearTimeout(timer);
+    if (answer === null) sidecarTimedOut = true;
+    else sidecarResult = answer;
   }
 
-  // Write to IndexedDB (best-effort)
-  const idbResult = await (idbFirst ?? saveToIndexedDB(ctx.fingerprint, text));
+  // Write to IndexedDB (best-effort). The text and fingerprint are this save's
+  // own, so the write completes even if another file has loaded since; the
+  // generation check guards only the store updates below (D-029). A newer copy
+  // written at a file switch is not overwritten with this older text (D-036),
+  // unless that copy's own write failed (D-053)
+  const latest = latestCopy.get(ctx.fingerprint);
+  const idbResult = await (idbFirst ??
+    (latest && latest.seq > seq
+      ? latest.written.then((ok) => (ok ? { ok: true as const } : saveToIndexedDB(ctx.fingerprint, text)))
+      : saveToIndexedDB(ctx.fingerprint, text)));
   if (ctx.generation !== saveGeneration) return;
+  if (sidecarResult?.ok || idbResult.ok) ctx.onPersisted?.();
 
   // Determine outcome: sidecar ok → saved, else IDB ok → saved,
   // else IDB unavailable → 'unavailable', else 'error'
-  if (sidecarResult?.ok) {
+  if (sidecarTimedOut) {
+    ctx.onError('Sidecar PUT timed out after 10 s');
+  } else if (sidecarResult?.ok) {
     ctx.onSaved(savedAt);
   } else if (sidecarResult && !sidecarResult.ok) {
     ctx.onError(`Sidecar PUT failed: ${sidecarResult.status} ${sidecarResult.message}`);
@@ -792,12 +852,51 @@ export function scheduleSave(ctx: SaveContext): void {
 
   // Debounce, but never later than MAX_WAIT_MS after the first pending change
   const delay = Math.min(DEBOUNCE_MS, Math.max(0, since + MAX_WAIT_MS - now));
+  scheduledCtx = ctx;
   pendingSaveTimeout = setTimeout(() => {
     pendingSaveTimeout = null;
     pendingSince = null;
+    scheduledCtx = null;
     startOrChainSave(ctx);
   }, delay);
   notifySavePending();
+}
+
+/** Whether a save is scheduled or in flight, so a caller awaits a flush only when there is one. */
+export function isSavePending(): boolean {
+  return pendingSaveTimeout !== null || saveInFlight !== null;
+}
+
+/** How long opening another file waits for the current file's save (PRD §2.7, D-034). */
+export const FLUSH_MAX_WAIT_MS = 5000;
+
+/**
+ * Run a debounced save now instead of dropping it, and wait for the chain to
+ * settle, so opening another file or loading a session saves the current
+ * file's pending changes first (D-029; PRD §2.7). The save starts its
+ * IndexedDB write before the sidecar PUT, as the page-close flushes do, and
+ * the wait ends after maxWaitMs even if the PUT never answers (D-034); the
+ * save itself keeps running. Resolves true when the chain settled in time.
+ */
+export async function flushPendingSave(maxWaitMs: number = FLUSH_MAX_WAIT_MS): Promise<boolean> {
+  const ctx = scheduledCtx;
+  if (pendingSaveTimeout && ctx) {
+    clearPendingSaves();
+    startOrChainSave(ctx, { idbFirst: true });
+  }
+  if (!saveInFlight) return true;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, maxWaitMs));
+  });
+  const settled = (async () => {
+    while (saveInFlight) await saveInFlight;
+    return true as const;
+  })();
+  const result = await Promise.race([settled, timedOut]);
+  clearTimeout(timer);
+  return result;
 }
 
 export async function saveImmediate(
@@ -867,7 +966,7 @@ export function makeFetchTransport(
 
     async put(
       text: string,
-      opts?: { keepalive?: boolean }
+      opts?: { keepalive?: boolean; signal?: AbortSignal }
     ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
       const token = getSidecarToken();
       if (!token) return { ok: false, status: 0, message: 'No token configured' };
@@ -881,6 +980,7 @@ export function makeFetchTransport(
           },
           body: text,
           keepalive: opts?.keepalive,
+          signal: opts?.signal,
         });
 
         if (response.ok) {

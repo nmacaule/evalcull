@@ -13,8 +13,10 @@ import {
   serialiseSession,
   stateFromSession,
   makeFetchTransport,
+  bumpSaveGeneration,
   type SidecarTransport,
 } from '../src/store/persistence';
+import { resetStore } from './helpers/app';
 import {
   useReviewStore,
   clearRegroupHandle,
@@ -42,6 +44,9 @@ import type {
 // -----------------------------------------------------------------------------
 
 beforeEach(() => {
+  // A save scheduled by the previous test must not run against the reset store
+  bumpSaveGeneration();
+
   // Fresh IDB per test
   configureStorage({ indexedDB: new IDBFactory() });
 
@@ -65,6 +70,16 @@ beforeEach(() => {
     lastSavedAt: null,
     session: { kind: 'fresh' },
     newerLocalCopy: null,
+    _newerLocalCopyText: null,
+    switching: { kind: 'idle' },
+    cancelledSwitch: null,
+    switchNotice: null,
+    _switchReserved: false,
+    _switchRunning: false,
+    _heldSwitch: null,
+    _changeSeq: 0,
+    _sinkedSeq: 0,
+    _exportedChangeSeq: -1,
     _dirty: false,
     _lastSerializedText: null,
   });
@@ -1083,10 +1098,11 @@ describe('sidecar transport', () => {
 
 describe('save queue', () => {
   /**
-   * Proves: generation counter prevents a stale write from updating state
-   * after load() bumps the generation. The late-completing PUT is ignored.
+   * Proves: load() waits for the first file's PUT in flight (D-029), then holds
+   * the second file; that PUT's completion does not change the second file's
+   * storageState.
    */
-  it('load bumps generation so late PUT completion is ignored', async () => {
+  it('load waits for a PUT in flight, then holds the second file', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     configureStorage({ indexedDB: undefined });
 
@@ -1110,9 +1126,10 @@ describe('save queue', () => {
 
     expect(transport.put).toHaveBeenCalledTimes(1);
 
-    // Load second file before PUT completes - bumps generation
+    // Load second file before PUT completes; load() waits for that PUT (D-029),
+    // so it is started, not awaited, before the PUT is completed
     const source2 = createMockSource(10);
-    await useReviewStore.getState().load(source2, {
+    const loading = useReviewStore.getState().load(source2, {
       sourceName: 'file2.jsonl',
       fingerprint: 'fp2',
       format: { kind: 'unknown' },
@@ -1120,11 +1137,13 @@ describe('save queue', () => {
 
     // Complete the old PUT
     pendingPut.resolve({ ok: true });
+    await loading;
     await Promise.resolve();
 
-    // State should reflect file2, not be updated by stale completion
+    // State should reflect file2, not be updated by the first file's PUT completing
     expect(useReviewStore.getState().fingerprint).toBe('fp2');
     expect(useReviewStore.getState().session.kind).toBe('fresh');
+    expect(useReviewStore.getState().storageState).toEqual({ kind: 'idle' });
   });
 
   /**
@@ -1548,5 +1567,1367 @@ describe('regroup on restore', () => {
     });
 
     clearRegroupHandle('test-fp');
+  });
+});
+
+describe('switching files keeps unsaved changes (D-029)', () => {
+  // fake-indexeddb schedules on setImmediate, which is not faked here: real
+  // macrotask rounds let the IndexedDB write finish without moving the clock
+  async function settleIndexedDB(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  }
+
+  function readStored(factory: IDBFactory, key: string): Promise<string | undefined> {
+    return new Promise((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onsuccess = () => {
+        const get = req.result.transaction('sessions').objectStore('sessions').get(key);
+        get.onsuccess = () => resolve(get.result as string | undefined);
+        get.onerror = () => reject(get.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  const meta = (fingerprint: string) => ({
+    sourceName: `${fingerprint}.jsonl`,
+    fingerprint,
+    format: { kind: 'unknown' } as const,
+  });
+
+  // What an IndexedDB copy reads as when there is none: no fingerprint, no decisions
+  const NO_COPY = '{"decisions":{}}';
+
+  it("load() of another file saves the previous file's pending change first (D-029)", async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(100);
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await settleIndexedDB();
+
+    const stored = await readStored(factory, 'fp-a');
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored!).decisions['0'].status).toBe('kept');
+  });
+
+  it('a refused session import keeps the pending save (D-029)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const mismatch = readFileSync(
+      join(import.meta.dirname, 'fixtures', 'sessions', 'fingerprint-mismatch.json'),
+      'utf-8'
+    );
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await useReviewStore.getState().importSession(mismatch);
+    expect(useReviewStore.getState().session.kind).toBe('refused');
+
+    await vi.advanceTimersByTimeAsync(500);
+    for (let i = 0; i < 20 && useReviewStore.getState().storageState.kind !== 'saved'; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+
+    expect(useReviewStore.getState().storageState).toEqual({ kind: 'saved' });
+    expect(JSON.parse((await readStored(factory, 'fp-a'))!).decisions['0'].status).toBe('kept');
+  });
+
+  it('a save in flight when another file loads still writes IndexedDB (D-029)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const put = deferred<{ ok: true }>();
+    let putCount = 0;
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => {
+          putCount++;
+          return putCount === 1 ? put.promise : Promise.resolve({ ok: true as const });
+        }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(putCount).toBe(1);
+
+    // After the fix load() waits for this PUT, so it is started, not awaited, first
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    put.resolve({ ok: true });
+    await loading;
+    await settleIndexedDB();
+
+    const stored = await readStored(factory, 'fp-a');
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored!).decisions['0'].status).toBe('kept');
+  });
+
+  it('a change made while load() waits for the save is saved too (D-032)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const put = deferred<{ ok: true }>();
+    let putCount = 0;
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => {
+          putCount++;
+          return putCount === 1 ? put.promise : Promise.resolve({ ok: true as const });
+        }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(putCount).toBe(1);
+
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    // The first file is still loaded while load() waits for its save
+    useReviewStore.getState().decide('1', 'rejected');
+    put.resolve({ ok: true });
+    await loading;
+    await settleIndexedDB();
+
+    const stored = JSON.parse((await readStored(factory, 'fp-a'))!);
+    expect(stored.decisions['0'].status).toBe('kept');
+    expect(stored.decisions['1']?.status).toBe('rejected');
+  });
+
+  it('opening another file does not wait forever on a sidecar PUT that never answers (D-034)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: new IDBFactory() });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+
+    let settled = false;
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    loading.then(() => {
+      settled = true;
+    });
+    // A minute of fake time, with real macrotask rounds for fake-indexeddb
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settleIndexedDB();
+
+    expect(settled).toBe(true);
+    expect(useReviewStore.getState().fingerprint).toBe('fp-b');
+  });
+
+  it('after a switch past a sidecar PUT that never answers, the new file still saves to IndexedDB (D-035)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await loading;
+    await settleIndexedDB();
+
+    useReviewStore.getState().decide('1', 'rejected');
+    // Fake time and real macrotask rounds in turn: each save's IndexedDB write
+    // finishes on setImmediate before the next save's PUT and its timeout start
+    for (let round = 0; round < 3; round++) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      await settleIndexedDB();
+    }
+
+    const stored = await readStored(factory, 'fp-b');
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored!).decisions['1'].status).toBe('rejected');
+    expect(useReviewStore.getState().storageState).toEqual({
+      kind: 'error',
+      message: 'Sidecar PUT timed out after 10 s',
+    });
+  });
+
+  it('a change queued behind a save the sidecar never answers still reaches IndexedDB when another file opens (D-036)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    // Queued behind the save in flight
+    useReviewStore.getState().decide('1', 'rejected');
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    for (let round = 0; round < 3; round++) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      await settleIndexedDB();
+    }
+    await loading;
+
+    const stored = JSON.parse((await readStored(factory, 'fp-a'))!);
+    expect(stored.decisions['0'].status).toBe('kept');
+    expect(stored.decisions['1']?.status).toBe('rejected');
+  });
+
+  it('a file load requested while a session import waits for the save is refused, and the import applies to the file it was validated against (D-039 guard)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: new IDBFactory() });
+    const put = deferred<{ ok: true }>();
+    let putCount = 0;
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => {
+          putCount++;
+          return putCount === 1 ? put.promise : Promise.resolve({ ok: true as const });
+        }),
+      },
+    });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+    const dispose = vi.fn();
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    const importing = useReviewStore.getState().importSession(sessionForA);
+    // One switch at a time: the load is refused and its reader released (DR-001 rule 1)
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'), { regroup: vi.fn(), dispose });
+    expect(dispose).toHaveBeenCalledTimes(1);
+    put.resolve({ ok: true });
+    await loading;
+    await importing;
+    await settleIndexedDB();
+
+    const s = useReviewStore.getState();
+    expect({ fingerprint: s.fingerprint, decision2: s.decisions.get('2')?.status }).toEqual({
+      fingerprint: 'fp-a',
+      decision2: 'rejected',
+    });
+  });
+
+  it('a timed-out sidecar PUT that lands late does not leave the sidecar older than the save after it (D-040)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: new IDBFactory() });
+    // A sidecar that keeps the body of each PUT when that PUT lands
+    let sidecar: string | null = null;
+    const first = deferred<{ ok: true }>();
+    let putCount = 0;
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(async (text: string, opts?: { signal?: AbortSignal }) => {
+          putCount++;
+          if (putCount === 1) {
+            await first.promise;
+            if (opts?.signal?.aborted) throw new Error('aborted');
+          }
+          sidecar = text;
+          return { ok: true as const };
+        }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settleIndexedDB();
+    useReviewStore.getState().decide('1', 'rejected');
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+    expect(putCount).toBe(2);
+
+    first.resolve({ ok: true });
+    await settleIndexedDB();
+
+    expect(JSON.parse(sidecar!).decisions['1']?.status).toBe('rejected');
+  });
+
+  it('a switch is cancelled when the wait runs out and the IndexedDB write of the latest changes fails (D-041)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await loading;
+
+    const s = useReviewStore.getState();
+    expect({ fingerprint: s.fingerprint, kept: s.decisions.get('0')?.status, storageState: s.storageState }).toEqual({
+      fingerprint: 'fp-a',
+      kept: 'kept',
+      storageState: {
+        kind: 'not-saved',
+        message:
+          "The current file's changes could not be saved: IndexedDB not available. Download the session to keep them.",
+      },
+    });
+
+    // Drain the save that never answers (its 10 s timeout), so no later test inherits it
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+
+  it('a session import requested while a file load waits for the save is refused, and the load opens its file (D-042)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // t = 500: the PUT starts and never answers; the load waits until t = 5,500
+    await vi.advanceTimersByTimeAsync(500);
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // One switch at a time: the import at t = 1,500 is refused while the load is still waiting (DR-001 rule 1)
+    await useReviewStore.getState().importSession(sessionForA);
+    expect({ fingerprint: useReviewStore.getState().fingerprint, session: useReviewStore.getState().session }).toEqual({
+      fingerprint: 'fp-a',
+      session: { kind: 'refused', reason: 'switching', message: 'Wait for fp-b.jsonl to open.' },
+    });
+
+    // The load runs to completion; then drain the PUT's 10 s timeout and the saves after it
+    await vi.advanceTimersByTimeAsync(4_000);
+    await settleIndexedDB();
+    await loading;
+    for (let round = 0; round < 3; round++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settleIndexedDB();
+    }
+
+    const s = useReviewStore.getState();
+    const a = await readStored(factory, 'fp-a');
+    const b = await readStored(factory, 'fp-b');
+    expect({
+      fingerprint: s.fingerprint,
+      decision2: s.decisions.get('2')?.status,
+      aFingerprint: JSON.parse(a ?? NO_COPY).fingerprint,
+      aKept: JSON.parse(a ?? NO_COPY).decisions['0']?.status,
+      bFingerprint: JSON.parse(b ?? NO_COPY).fingerprint,
+      bHasAsDecision: '2' in JSON.parse(b ?? NO_COPY).decisions,
+    }).toEqual({
+      fingerprint: 'fp-b',
+      decision2: undefined,
+      aFingerprint: 'fp-a',
+      aKept: 'kept',
+      bFingerprint: undefined,
+      bHasAsDecision: false,
+    });
+  });
+
+  it('a file load requested while a session import re-groups is refused, and the import applies to the file it was validated against (D-045)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    // fp-a's session uses another format, so the import re-groups first
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+    const regrouped = deferred<{
+      groups: Uint32Array;
+      groupCount: number;
+      unparseable: Uint32Array;
+      candidates: Uint16Array;
+    }>();
+    let regroupCalls = 0;
+    const handleA = {
+      regroup: () => {
+        regroupCalls++;
+        return regrouped.promise;
+      },
+      dispose: () => {},
+    };
+    const dispose = vi.fn();
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'), handleA);
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+
+    let imported = false;
+    const importing = useReviewStore.getState().importSession(sessionForA);
+    importing.then(() => {
+      imported = true;
+    });
+    await settleIndexedDB();
+    expect(regroupCalls).toBe(1);
+
+    // One switch at a time: the load is refused while the import re-groups, and its reader released (DR-001 rule 1)
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'), { regroup: vi.fn(), dispose });
+    expect({ fingerprint: useReviewStore.getState().fingerprint, imported, disposed: dispose.mock.calls.length }).toEqual({
+      fingerprint: 'fp-a',
+      imported: false,
+      disposed: 1,
+    });
+
+    regrouped.resolve({
+      groups: new Uint32Array([0, 1, 2]),
+      groupCount: 3,
+      unparseable: new Uint32Array(0),
+      candidates: new Uint16Array([1, 1, 1]),
+    });
+    await importing;
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+
+    // The import replaced fp-a's session, so fp-a's copy is the imported one
+    const s = useReviewStore.getState();
+    const a = await readStored(factory, 'fp-a');
+    const b = await readStored(factory, 'fp-b');
+    expect({
+      fingerprint: s.fingerprint,
+      decision1: s.decisions.get('1')?.status,
+      decision2: s.decisions.get('2')?.status,
+      aFingerprint: JSON.parse(a ?? NO_COPY).fingerprint,
+      aKept: JSON.parse(a ?? NO_COPY).decisions['0']?.status,
+      bFingerprint: JSON.parse(b ?? NO_COPY).fingerprint,
+      bKept: JSON.parse(b ?? NO_COPY).decisions['1']?.status,
+      bHasAsDecision: '2' in JSON.parse(b ?? NO_COPY).decisions,
+    }).toEqual({
+      fingerprint: 'fp-a',
+      decision1: undefined,
+      decision2: 'rejected',
+      aFingerprint: 'fp-a',
+      aKept: undefined,
+      bFingerprint: undefined,
+      bKept: undefined,
+      bHasAsDecision: false,
+    });
+  });
+
+  it('retrying a cancelled switch after the save chain has settled still does not open the new file (D-046)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    const first = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await first;
+    // The save that never answers times out and the chain ends
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+
+    const s = useReviewStore.getState();
+    expect({ fingerprint: s.fingerprint, kept: s.decisions.get('0')?.status }).toEqual({
+      fingerprint: 'fp-a',
+      kept: 'kept',
+    });
+  });
+
+  it("a session import made while load() awaits its restore reads never writes the new file's session under the old fingerprint (D-047)", async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    // load() bumps the generation, then awaits its restore reads; the import lands in that window
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    const importing = useReviewStore.getState().importSession(sessionForA);
+    await importing;
+    await settleIndexedDB();
+    await loading;
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+
+    const a = await readStored(factory, 'fp-a');
+    expect({
+      fingerprint: useReviewStore.getState().fingerprint,
+      aCopyFingerprint: a === undefined ? 'none' : JSON.parse(a).fingerprint,
+    }).toEqual({ fingerprint: 'fp-b', aCopyFingerprint: expect.stringMatching(/^(none|fp-a)$/) });
+  });
+
+  it('Use the newer copy started on one file is not applied to a file opened meanwhile (D-048)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const base = {
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      cursor: 0,
+      history: [],
+    };
+    // Seed the newer local copy through the factory passed to configureStorage
+    await new Promise<void>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('sessions');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(
+          JSON.stringify({ ...base, savedAt: 2000, decisions: { '0': { status: 'kept', updatedAt: 2000 } } }),
+          'fp-a'
+        );
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi
+          .fn()
+          .mockResolvedValueOnce(JSON.stringify({ ...base, savedAt: 1000, decisions: {} }))
+          .mockResolvedValue(null),
+        put: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    expect(useReviewStore.getState().newerLocalCopy).not.toBeNull();
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    const applying = useReviewStore.getState().applyNewerLocalCopy();
+    await settleIndexedDB();
+    await loading;
+    await applying;
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+
+    const s = useReviewStore.getState();
+    const a = await readStored(factory, 'fp-a');
+    expect({
+      fingerprint: s.fingerprint,
+      decision0: s.decisions.get('0')?.status,
+      aCopyFingerprint: a === undefined ? 'none' : JSON.parse(a).fingerprint,
+    }).toEqual({ fingerprint: 'fp-b', decision0: undefined, aCopyFingerprint: 'fp-a' });
+  });
+
+  it('Open anyway after a cancelled session import applies the session (D-052)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the import cannot save the change first, so it is cancelled
+    await useReviewStore.getState().importSession(sessionForA);
+    expect(useReviewStore.getState().storageState.kind).toBe('not-saved');
+
+    await useReviewStore.getState().openAnywayDiscarding();
+
+    const s = useReviewStore.getState();
+    expect({
+      session: s.session.kind,
+      decision0: s.decisions.get('0')?.status,
+      decision2: s.decisions.get('2')?.status,
+      cancelledSwitch: s.cancelledSwitch,
+    }).toEqual({ session: 'restored', decision0: undefined, decision2: 'rejected', cancelledSwitch: null });
+  });
+
+  it('a save in flight still writes IndexedDB when the switch-time write before it failed (D-053)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    // The switch's latest-copy write fails, so the switch is cancelled
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await loading;
+    // IndexedDB works again before the save in flight times out at 10.5 s
+    const factory = new IDBFactory();
+    configureStorage({ indexedDB: factory });
+    for (let round = 0; round < 2; round++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settleIndexedDB();
+    }
+
+    // No sessions store means nothing was written
+    const a = await new Promise<string | undefined>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onsuccess = () => {
+        if (!req.result.objectStoreNames.contains('sessions')) return resolve(undefined);
+        const get = req.result.transaction('sessions').objectStore('sessions').get('fp-a');
+        get.onsuccess = () => resolve(get.result as string | undefined);
+        get.onerror = () => reject(get.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    expect({
+      aKept: a === undefined ? 'none' : JSON.parse(a).decisions['0']?.status,
+      storageState: useReviewStore.getState().storageState.kind,
+    }).toEqual({ aKept: 'kept', storageState: 'not-saved' });
+  });
+
+  it("Open anyway is refused while a dropped file is being read, and the dropped file's reservation stays its own (D-055)", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the switch to fp-b is cancelled and held for Open anyway
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    // A file c.jsonl is being read before its load()
+    expect(useReviewStore.getState().beginOpening('c.jsonl')).toBe(true);
+
+    await useReviewStore.getState().openAnywayDiscarding();
+
+    const s = useReviewStore.getState();
+    expect({ fingerprint: s.fingerprint, cancelledSwitch: s.cancelledSwitch, switching: s.switching }).toEqual({
+      fingerprint: 'fp-a',
+      cancelledSwitch: { name: 'fp-b.jsonl' },
+      switching: { kind: 'opening', name: 'c.jsonl' },
+    });
+  });
+
+  it('a change made while a switch writes its last IndexedDB copy is saved before the switch leaves the file (D-058)', async () => {
+    const real = new IDBFactory();
+    // A factory whose sessions puts call onPut first: a change can land during a write, whatever the timeline
+    let onPut: () => void = () => {};
+    const factory = {
+      open: (name: string, version?: number) => {
+        const req = real.open(name, version);
+        req.addEventListener('success', () => {
+          const db = req.result;
+          const transaction = db.transaction.bind(db);
+          db.transaction = ((...args: Parameters<IDBDatabase['transaction']>) => {
+            const tx = transaction(...args);
+            const objectStore = tx.objectStore.bind(tx);
+            tx.objectStore = (n: string) => {
+              const store = objectStore(n);
+              const put = store.put.bind(store);
+              store.put = (...p: Parameters<IDBObjectStore['put']>) => {
+                onPut();
+                return put(...p);
+              };
+              return store;
+            };
+            return tx;
+          }) as IDBDatabase['transaction'];
+        });
+        return req;
+      },
+    } as unknown as IDBFactory;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(4), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    // A change lands during each of the switch's first three IndexedDB writes
+    const changes: Array<[string, 'rejected' | 'skipped' | 'kept']> = [
+      ['1', 'rejected'],
+      ['2', 'skipped'],
+      ['3', 'kept'],
+    ];
+    onPut = () => {
+      const next = changes.shift();
+      if (next) useReviewStore.getState().decide(next[0], next[1]);
+    };
+    const loading = useReviewStore.getState().load(createMockSource(4), meta('fp-b'));
+    for (let round = 0; round < 4; round++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settleIndexedDB();
+    }
+    await loading;
+
+    const a = JSON.parse((await readStored(real, 'fp-a')) ?? NO_COPY);
+    expect({
+      d0: a.decisions['0']?.status,
+      d1: a.decisions['1']?.status,
+      d2: a.decisions['2']?.status,
+      d3: a.decisions['3']?.status,
+    }).toEqual({ d0: 'kept', d1: 'rejected', d2: 'skipped', d3: 'kept' });
+  });
+
+  it('the Use the newer copy offer stays when its import is cancelled for unsaved changes (D-059)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const base = {
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      cursor: 0,
+      history: [],
+    };
+    await new Promise<void>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('sessions');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(
+          JSON.stringify({ ...base, savedAt: 2000, decisions: { '1': { status: 'kept', updatedAt: 2000 } } }),
+          'fp-a'
+        );
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi
+          .fn()
+          .mockResolvedValueOnce(JSON.stringify({ ...base, savedAt: 1000, decisions: {} }))
+          .mockResolvedValue(null),
+        put: vi.fn().mockResolvedValue({ ok: false, status: 500, message: 'boom' }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // IndexedDB goes away before Use the newer copy, whose text is held from load
+    // (D-075), so the change reaches no sink
+    configureStorage({ indexedDB: undefined });
+    const applying = useReviewStore.getState().applyNewerLocalCopy();
+    await settleIndexedDB();
+    await vi.advanceTimersByTimeAsync(500);
+    await applying;
+
+    const s = useReviewStore.getState();
+    expect({ storageState: s.storageState.kind, newerLocalCopy: s.newerLocalCopy }).toEqual({
+      storageState: 'not-saved',
+      newerLocalCopy: { savedAt: 2000 },
+    });
+  });
+
+  it('after a cancelled switch, a session download clears the unsaved mark and the switch then goes ahead (DR-001 refinement 1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    expect(useReviewStore.getState().fingerprint).toBe('fp-a');
+
+    // What the Download session button does: the text handed to the browser, then the mark cleared
+    useReviewStore.getState().exportSession();
+    useReviewStore.getState().noteSessionDownloaded();
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+
+    expect(useReviewStore.getState().fingerprint).toBe('fp-b');
+  });
+
+  it('Open anyway after a cancelled file switch opens the file and discards the changes (DR-001 B-i)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await useReviewStore.getState().openAnywayDiscarding();
+
+    const s = useReviewStore.getState();
+    expect({ fingerprint: s.fingerprint, kept: s.decisions.get('0')?.status, cancelledSwitch: s.cancelledSwitch, storageState: s.storageState }).toEqual({
+      fingerprint: 'fp-b',
+      kept: undefined,
+      cancelledSwitch: null,
+      storageState: { kind: 'idle' },
+    });
+  });
+
+  it('the filter is kept when another file opens (DR-001 refinement 2)', async () => {
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().setFilter('kept');
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+
+    expect({ fingerprint: useReviewStore.getState().fingerprint, filter: useReviewStore.getState().filter }).toEqual({
+      fingerprint: 'fp-b',
+      filter: 'kept',
+    });
+  });
+
+  it('a reservation is claimed by the load that follows it, and one left unclaimed is dropped (DR-001 rule 6)', async () => {
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+
+    expect(useReviewStore.getState().beginOpening('fp-b.jsonl')).toBe(true);
+    expect(useReviewStore.getState().beginOpening('fp-c.jsonl')).toBe(false);
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    useReviewStore.getState().endOpening();
+    const afterLoad = { fingerprint: useReviewStore.getState().fingerprint, switching: useReviewStore.getState().switching };
+
+    // A read that fails never calls load(): endOpening drops the reservation
+    useReviewStore.getState().beginOpening('fp-c.jsonl');
+    useReviewStore.getState().endOpening();
+
+    expect({ afterLoad, afterFailedRead: useReviewStore.getState().switching }).toEqual({
+      afterLoad: { fingerprint: 'fp-b', switching: { kind: 'idle' } },
+      afterFailedRead: { kind: 'idle' },
+    });
+  });
+
+  it('an import cancelled after its regroup leaves the index as the current format grouped it (D-062 guard)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+    const source = createMockSource(3);
+    const index = (source as Extract<RecordSource, { kind: 'jsonl' }>).index;
+    // As the reader's regroup does since D-062: it returns the result and writes nothing into the index
+    const regrouped = deferred<void>();
+    const handle = {
+      regroup: async () => {
+        await regrouped.promise;
+        return {
+          groups: new Uint32Array([0, 0, 0]),
+          groupCount: 1,
+          unparseable: new Uint32Array(0),
+          candidates: new Uint16Array([3, 3, 3]),
+        };
+      },
+      dispose: () => {},
+    };
+
+    await useReviewStore.getState().load(source, meta('fp-a'), handle);
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink, but the downloaded session clears the mark, so the import starts
+    useReviewStore.getState().exportSession();
+    useReviewStore.getState().noteSessionDownloaded();
+    const importing = useReviewStore.getState().importSession(sessionForA);
+    await vi.advanceTimersByTimeAsync(0);
+    // A change during the regroup, which the second save-first step cannot save, so the import is cancelled
+    useReviewStore.getState().decide('1', 'rejected');
+    regrouped.resolve();
+    await importing;
+
+    const s = useReviewStore.getState();
+    expect({
+      storageState: s.storageState.kind,
+      format: s.format.kind,
+      groupCount: index.groupCount,
+    }).toEqual({ storageState: 'not-saved', format: 'unknown', groupCount: 3 });
+  });
+
+  it('a store reset clears a switch left running before it, so a dropped file still opens (D-066)', async () => {
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    // A switch whose session read never answers stays running
+    configureSidecar({ token: 'tok', transport: { get: () => new Promise(() => {}), put: vi.fn() } });
+    void useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+
+    resetStore();
+    // A dropped file: the Dropzone holds the switch, then its load() claims it
+    useReviewStore.getState().beginOpening('fp-c.jsonl');
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-c'));
+
+    expect(useReviewStore.getState().fingerprint).toBe('fp-c');
+  });
+
+  it('a session import after a cancelled switch leaves no Open anyway behind for the released switch (D-067)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the switch to fp-b is cancelled and held
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    // The session is downloaded, then a session is loaded for the current file
+    useReviewStore.getState().exportSession();
+    useReviewStore.getState().noteSessionDownloaded();
+    await useReviewStore.getState().importSession(sessionForA);
+
+    const s = useReviewStore.getState();
+    expect({ session: s.session.kind, cancelledSwitch: s.cancelledSwitch, held: s._heldSwitch }).toEqual({
+      session: 'restored',
+      cancelledSwitch: null,
+      held: null,
+    });
+  });
+
+  it('the held switch and the cancelled-switch actions are never seen apart (D-068)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    // Every store notification: a held switch exactly when its actions are offered
+    const seenApart: string[] = [];
+    const unsubscribe = useReviewStore.subscribe((s) => {
+      if ((s._heldSwitch === null) !== (s.cancelledSwitch === null)) {
+        seenApart.push(`held ${s._heldSwitch !== null}, offered ${s.cancelledSwitch !== null}`);
+      }
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Cancelled and held, then opened anyway
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await useReviewStore.getState().openAnywayDiscarding();
+    unsubscribe();
+
+    expect({ fingerprint: useReviewStore.getState().fingerprint, seenApart }).toEqual({
+      fingerprint: 'fp-b',
+      seenApart: [],
+    });
+  });
+
+  it('the load commit is one set: the old file is never seen with its unsaved mark cleared (D-070)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the switch is cancelled, then opened anyway, discarding the change
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    const seen: string[] = [];
+    const unsubscribe = useReviewStore.subscribe((s) => {
+      // While fp-a is the file, its change has reached no sink
+      if (s.fingerprint === 'fp-a' && !(s._sinkedSeq < s._changeSeq)) seen.push(`fp-a with mark ${s._sinkedSeq}/${s._changeSeq}`);
+    });
+    await useReviewStore.getState().openAnywayDiscarding();
+    unsubscribe();
+
+    expect({ fingerprint: useReviewStore.getState().fingerprint, seen }).toEqual({ fingerprint: 'fp-b', seen: [] });
+  });
+
+  it('a cancelled session import and its Open anyway re-run report the session file by name (D-073)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    // fp-a's session uses another format, so the re-run re-groups, held here
+    const sessionForA = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: {},
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+    const regrouped = deferred<{
+      groups: Uint32Array;
+      groupCount: number;
+      unparseable: Uint32Array;
+      candidates: Uint16Array;
+    }>();
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'), { regroup: () => regrouped.promise, dispose: () => {} });
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the import named s.json is cancelled
+    await useReviewStore.getState().importSession(sessionForA, { name: 's.json' });
+    const cancelled = useReviewStore.getState().cancelledSwitch;
+
+    const reRun = useReviewStore.getState().openAnywayDiscarding();
+    await vi.advanceTimersByTimeAsync(0);
+    const switching = useReviewStore.getState().switching;
+    regrouped.resolve({
+      groups: new Uint32Array([0, 1, 2]),
+      groupCount: 3,
+      unparseable: new Uint32Array(0),
+      candidates: new Uint16Array([1, 1, 1]),
+    });
+    await reRun;
+    // The regroup handle is module state: drop it so no later test inherits it
+    clearRegroupHandle('fp-a');
+
+    expect({ cancelled, switching }).toEqual({
+      cancelled: { name: 's.json' },
+      switching: { kind: 'opening', name: 's.json' },
+    });
+  });
+
+  it('a format change with no regroup handle is saved like any other change (D-074)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // No regroup handle: the format is set directly
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    await useReviewStore.getState().setFormat({ kind: 'flat', promptPath: 'prompt', responsePath: 'response' });
+
+    const s = useReviewStore.getState();
+    expect({ format: s.format.kind, storageState: s.storageState.kind, unsaved: s._sinkedSeq < s._changeSeq }).toEqual({
+      format: 'flat',
+      storageState: 'saving',
+      unsaved: true,
+    });
+  });
+
+  it('the newer copy offered at load is still the one applied after the current session saves (D-075)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const base = {
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      cursor: 0,
+      history: [],
+    };
+    await new Promise<void>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('sessions');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(
+          JSON.stringify({ ...base, savedAt: 2000, decisions: { '1': { status: 'kept', updatedAt: 2000 } } }),
+          'fp-a'
+        );
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(JSON.stringify({ ...base, savedAt: 1000, decisions: {} })),
+        put: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    expect(useReviewStore.getState().newerLocalCopy).toEqual({ savedAt: 2000 });
+    // A cursor move alone is a change, and its save writes IndexedDB
+    useReviewStore.getState().next();
+    await vi.advanceTimersByTimeAsync(500);
+    await settleIndexedDB();
+    await useReviewStore.getState().applyNewerLocalCopy();
+    await settleIndexedDB();
+
+    expect(useReviewStore.getState().decisions.get('1')?.status).toBe('kept');
+  });
+
+  it('a regroup that rejects stops the switch and leaves things as they were (D-076)', async () => {
+    const factory = new IDBFactory();
+    configureStorage({ indexedDB: factory });
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    // fp-b's saved session uses another format, so its load re-groups, and the worker fails
+    await new Promise<void>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('sessions');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(
+          JSON.stringify({
+            version: 3,
+            fingerprint: 'fp-b',
+            sourceName: 'fp-b.jsonl',
+            sourceKind: 'jsonl',
+            format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+            decisions: {},
+            cursor: 0,
+            history: [],
+            savedAt: 1,
+          }),
+          'fp-b'
+        );
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    const dispose = vi.fn();
+    const rejecting = { regroup: () => Promise.reject(new Error('worker failed')), dispose };
+
+    // The failure is reported to the caller, as a failed read is (the Dropzone shows it)
+    const reported = await useReviewStore
+      .getState()
+      .load(createMockSource(3), meta('fp-b'), rejecting)
+      .then(
+        () => 'none',
+        (err: Error) => err.message
+      );
+
+    expect({
+      reported,
+      fingerprint: useReviewStore.getState().fingerprint,
+      disposed: dispose.mock.calls.length,
+      switching: useReviewStore.getState().switching,
+    }).toEqual({ reported: 'worker failed', fingerprint: 'fp-a', disposed: 1, switching: { kind: 'idle' } });
+  });
+
+  it('a regroup that rejects in an import or a format change changes nothing and says why (D-076)', async () => {
+    const rejecting = { regroup: () => Promise.reject(new Error('worker failed')), dispose: () => {} };
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'), rejecting);
+    const sessionInFlat = JSON.stringify({
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+      decisions: { '2': { status: 'rejected', updatedAt: 1 } },
+      cursor: 0,
+      history: [],
+      savedAt: 1,
+    });
+
+    await useReviewStore.getState().importSession(sessionInFlat);
+    const afterImport = {
+      session: useReviewStore.getState().session,
+      decision2: useReviewStore.getState().decisions.get('2')?.status,
+    };
+    await useReviewStore.getState().setFormat({ kind: 'flat', promptPath: 'prompt', responsePath: 'response' });
+    clearRegroupHandle('fp-a');
+
+    expect({
+      afterImport,
+      format: useReviewStore.getState().format.kind,
+      notice: useReviewStore.getState().switchNotice,
+    }).toEqual({
+      afterImport: {
+        session: {
+          kind: 'refused',
+          reason: 'regroup-failed',
+          message: "Re-grouping for the session's format failed: worker failed",
+        },
+        decision2: undefined,
+      },
+      format: 'unknown',
+      notice: 'Re-grouping for the format failed: worker failed',
+    });
+  });
+
+  it('Use the newer copy, cancelled, reports the newer copy by name (D-079)', async () => {
+    const factory = new IDBFactory();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: factory });
+    const base = {
+      version: 3,
+      fingerprint: 'fp-a',
+      sourceName: 'fp-a.jsonl',
+      sourceKind: 'jsonl',
+      format: { kind: 'unknown' },
+      cursor: 0,
+      history: [],
+    };
+    await new Promise<void>((resolve, reject) => {
+      const req = factory.open('evalcull', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('sessions');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(JSON.stringify({ ...base, savedAt: 2000, decisions: {} }), 'fp-a');
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValueOnce(JSON.stringify({ ...base, savedAt: 1000, decisions: {} })).mockResolvedValue(null),
+        put: vi.fn().mockResolvedValue({ ok: false, status: 500, message: 'boom' }),
+      },
+    });
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink takes the change, so the newer copy's import is cancelled
+    configureStorage({ indexedDB: undefined });
+    await useReviewStore.getState().applyNewerLocalCopy();
+
+    expect(useReviewStore.getState().cancelledSwitch).toEqual({ name: 'the newer copy' });
+  });
+
+  it('a regroup that fails leaves a held cancelled switch as it was (D-080)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    const rejecting = { regroup: () => Promise.reject(new Error('worker failed')), dispose: () => {} };
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'), rejecting);
+    useReviewStore.getState().decide('0', 'kept');
+    // Neither sink: the switch to fp-b is cancelled and held; the download then clears the mark
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    useReviewStore.getState().exportSession();
+    useReviewStore.getState().noteSessionDownloaded();
+    // A session in another format: its import re-groups, and the regroup fails
+    await useReviewStore.getState().importSession(
+      JSON.stringify({
+        version: 3,
+        fingerprint: 'fp-a',
+        sourceName: 'fp-a.jsonl',
+        sourceKind: 'jsonl',
+        format: { kind: 'flat', promptPath: 'prompt', responsePath: 'response' },
+        decisions: {},
+        cursor: 0,
+        history: [],
+        savedAt: 1,
+      })
+    );
+    clearRegroupHandle('fp-a');
+
+    const s = useReviewStore.getState();
+    expect({ session: s.session.kind, cancelledSwitch: s.cancelledSwitch, held: s._heldSwitch !== null }).toEqual({
+      session: 'refused',
+      cancelledSwitch: { name: 'fp-b.jsonl' },
+      held: true,
+    });
+  });
+
+  it('the message of a cancelled switch stays after the save in flight times out (D-043)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    configureStorage({ indexedDB: undefined });
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => new Promise(() => {})),
+      },
+    });
+
+    await useReviewStore.getState().load(createMockSource(3), meta('fp-a'));
+    useReviewStore.getState().decide('0', 'kept');
+    await vi.advanceTimersByTimeAsync(500);
+    const loading = useReviewStore.getState().load(createMockSource(3), meta('fp-b'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await loading;
+    // Past the save's own 10 s timeout at 10.5 s, and the write that follows it
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(useReviewStore.getState().storageState).toEqual({
+      kind: 'not-saved',
+      message:
+        "The current file's changes could not be saved: IndexedDB not available. Download the session to keep them.",
+    });
   });
 });

@@ -124,10 +124,18 @@ export async function buildExport(
 
     case 'all.decisions.jsonl': {
       // All records, in chunks
-      blob = await exportAllDecisions(source, decisions, record, format, onProgress);
+      // Unparseable lines are left out when asked, as the preview says (D-022)
+      const include = excludeUnparseable
+        ? (i: number) => {
+            if (!isUnparseable(i)) return true;
+            stats.unparseableExcluded++;
+            return false;
+          }
+        : undefined;
+      blob = await exportAllDecisions(source, decisions, record, format, onProgress, include);
 
       const total = source.kind === 'jsonl' ? source.index.lineCount : source.count;
-      stats.lineCount = total;
+      stats.lineCount = total - stats.unparseableExcluded;
 
       // Count edits
       for (const d of decisions.values()) {

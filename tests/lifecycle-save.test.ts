@@ -14,6 +14,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar, type SidecarTransport } from '../src/store/persistence';
 import type { FileIndex, RecordSource } from '../src/types';
+import { resetStore } from './helpers/app';
 
 const KEEPALIVE_QUOTA = 65536;
 
@@ -98,6 +99,8 @@ function setVisibility(state: 'hidden' | 'visible') {
 }
 
 beforeEach(() => {
+  // Each test opens its file into an empty store, not over the previous test's file (DR-001 rule 3)
+  resetStore();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   setVisibility('visible');
 });
@@ -234,5 +237,72 @@ describe('beforeunload while a save is pending (D-005 G)', () => {
     expect(removedHandlers).toEqual(addedHandlers);
     added.mockRestore();
     removed.mockRestore();
+  });
+});
+
+describe('a save made when the tab is hidden counts for the switch (D-057)', () => {
+  it('a switch after a visibility-hidden save that reached the sidecar opens the new file', async () => {
+    configureStorage({ indexedDB: undefined });
+    configureSidecar({
+      token: 'tok',
+      transport: { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue({ ok: true }) },
+    });
+    await loadAndDecide(3, 1);
+
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await macrotasks();
+    setVisibility('visible');
+
+    await useReviewStore.getState().load(createMockSource(3), {
+      sourceName: 'b.jsonl',
+      fingerprint: 'lifecycle-b',
+      format: { kind: 'unknown' },
+    });
+
+    expect(useReviewStore.getState().fingerprint).toBe('lifecycle-b');
+  });
+});
+
+describe('the unsaved mark and a flush behind a save in flight (D-063)', () => {
+  it('a change carried only by a flush that failed still holds the switch', async () => {
+    configureStorage({ indexedDB: undefined });
+    let release: (r: { ok: true }) => void = () => {};
+    let putCount = 0;
+    configureSidecar({
+      token: 'tok',
+      transport: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockImplementation(() => {
+          putCount++;
+          // The first PUT is held; the flush's PUT behind it is refused
+          return putCount === 1
+            ? new Promise((resolve) => {
+                release = resolve;
+              })
+            : Promise.resolve({ ok: false, status: 500, message: 'boom' });
+        }),
+      },
+    });
+    await loadAndDecide(3, 1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(putCount).toBe(1);
+
+    // A second change, then the tab is hidden: the flush waits behind the PUT in flight
+    useReviewStore.getState().decide('1', 'rejected');
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    setVisibility('visible');
+    release({ ok: true });
+    await macrotasks();
+    expect(putCount).toBe(2);
+
+    await useReviewStore.getState().load(createMockSource(3), {
+      sourceName: 'b.jsonl',
+      fingerprint: 'lifecycle-b',
+      format: { kind: 'unknown' },
+    });
+
+    expect(useReviewStore.getState().fingerprint).toBe('lifecycle-fp');
   });
 });

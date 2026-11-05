@@ -12,6 +12,7 @@ import { useState, useMemo, useCallback } from 'react';
 import type { RecordFormat } from '../../types';
 import { parsePath, getByPath } from '../../lib/path';
 import { collectRoles } from '../../lib/schema';
+import { displayValue } from '../../lib/display';
 import {
   Dialog,
   DialogContent,
@@ -30,6 +31,8 @@ export interface SchemaMapperProps {
   currentFormat: RecordFormat;
   sampleRecords: unknown[];
   onApply: (format: RecordFormat) => void;
+  /** Told when the user changes a field: from then the modal holds a draft (DR-001 rule 6, D-069) */
+  onDraftChange?: () => void;
 }
 
 type ShapeKind = 'flat' | 'messages' | 'preference' | 'candidates' | 'unknown';
@@ -106,6 +109,7 @@ export function SchemaMapper({
   currentFormat,
   sampleRecords,
   onApply,
+  onDraftChange,
 }: SchemaMapperProps) {
   // Track selected shape
   const [selectedShape, setSelectedShape] = useState<ShapeKind>(currentFormat.kind);
@@ -206,7 +210,8 @@ export function SchemaMapper({
         if (Array.isArray(value)) {
           return { error: null, preview: `[${value.length} items]` };
         }
-        return { error: null, preview: JSON.stringify(value).slice(0, 100) };
+        // Samples are lossless-json values, so numbers preview as written (D-082)
+        return { error: null, preview: displayValue(value).slice(0, 100) };
       } catch (e) {
         return { error: String(e), preview: null };
       }
@@ -337,7 +342,8 @@ export function SchemaMapper({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+      {/* Every field is a native input or select, so one capture handler sees any change (D-069) */}
+      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto" onChangeCapture={() => onDraftChange?.()}>
         <DialogHeader>
           <DialogTitle>Configure Record Format</DialogTitle>
           <DialogDescription>
