@@ -5,6 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SchemaMapper } from '../src/components/SchemaMapper';
+import { losslessParse } from '../src/lib/lossless';
 
 describe("SchemaMapper Tab order (D-007)", () => {
   // Tabbable elements in DOM order, the order Tab visits them when no tabindex is positive
@@ -277,5 +278,25 @@ describe('SchemaMapper', () => {
     // Leave paths empty
     const applyButton = screen.getByText('Apply');
     expect(applyButton).toBeDisabled();
+  });
+});
+
+describe('SchemaMapper path preview', () => {
+  it('previews a number, and an object holding one, with its digits as written (D-082)', () => {
+    // Samples come from record(), which parses with lossless-json
+    render(
+      <SchemaMapper
+        open={true}
+        onOpenChange={() => {}}
+        currentFormat={{ kind: 'flat', promptPath: 'a', responsePath: 'n' }}
+        sampleRecords={[losslessParse('{"a":{"n":7},"n":9007199254740993}')]}
+        onApply={() => {}}
+      />
+    );
+
+    expect(screen.getAllByText(/^Preview:/).map((el) => el.textContent)).toEqual([
+      'Preview: {"n":7}',
+      'Preview: 9007199254740993',
+    ]);
   });
 });

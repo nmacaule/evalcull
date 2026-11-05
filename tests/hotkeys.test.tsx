@@ -5,13 +5,23 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 
-import { getTestableHotkeys } from '../src/lib/hotkeyTable';
+import { getTestableHotkeys } from './helpers/hotkeys';
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar } from '../src/store/persistence';
+import App from '../src/App';
+import {
+  makeSource as appSource,
+  press,
+  loadSource,
+  card,
+  resetStore,
+  FLAT_IO,
+  MESSAGES,
+} from './helpers/app';
 // -----------------------------------------------------------------------------
 // Test setup
 // -----------------------------------------------------------------------------
@@ -488,5 +498,65 @@ describe('hotkeys', () => {
       expect(editConfirmKeep).toHaveBeenCalled();
       expect(prefer).not.toHaveBeenCalled();
     });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// App-level keys (WP 6b defects)
+// -----------------------------------------------------------------------------
+
+describe('App-level keys (WP 6b)', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it('ArrowDown scrolls the focused card by 40 px (D-019)', async () => {
+    const source = appSource(
+      [
+        '{"messages":[{"role":"user","content":"u"},{"role":"assistant","content":"a"}]}',
+        '{"messages":[{"role":"user","content":"u"},{"role":"assistant","content":"b"}]}',
+      ],
+      [0, 0],
+      [1, 1]
+    );
+    await loadSource(source, MESSAGES);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '1').textContent).toContain('b'));
+    const content = card(container, '0').querySelector('.overflow-auto') as HTMLElement;
+    expect(content.scrollTop).toBe(0);
+
+    press('ArrowDown', 'ArrowDown');
+
+    expect(content.scrollTop).toBe(40);
+    press('ArrowUp', 'ArrowUp');
+    expect(content.scrollTop).toBe(0);
+  });
+
+  it('ArrowDown scrolls a flat card by 40 px too (D-019)', async () => {
+    const source = appSource(
+      ['{"instruction":"q","output":"a"}', '{"instruction":"q","output":"b"}'],
+      [0, 0],
+      [1, 1]
+    );
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '1').textContent).toContain('b'));
+    const content = card(container, '0').querySelector('[data-card-content]') as HTMLElement;
+
+    press('ArrowDown', 'ArrowDown');
+
+    expect(content.scrollTop).toBe(40);
+  });
+
+  it('F cycles through unparseable and back to all (D-021)', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+
+    for (let i = 0; i < 6; i++) press('f', 'KeyF');
+    expect(useReviewStore.getState().filter).toBe('unparseable');
+    press('f', 'KeyF');
+    expect(useReviewStore.getState().filter).toBe('all');
   });
 });

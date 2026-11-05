@@ -3,7 +3,7 @@
  * WP 6a: Auto-advances on decide() per WP 3 decision d.
  */
 
-import type { CandidateRef, RecordFormat } from '../../types';
+import type { CandidateRef, DecisionStatus, RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import type { EditValue } from '../../store/types';
 import { ReviewCard } from '../ReviewCard';
@@ -17,6 +17,7 @@ export interface SingleViewProps {
   showWhitespace: boolean;
   edits?: Record<string, EditValue>;
   onEdit?: (path: string) => void;
+  status?: DecisionStatus;
 }
 
 export function SingleView({
@@ -28,6 +29,7 @@ export function SingleView({
   showWhitespace,
   edits,
   onEdit,
+  status,
 }: SingleViewProps) {
   return (
     <div className="max-w-3xl mx-auto">
@@ -41,6 +43,7 @@ export function SingleView({
         showWhitespace={showWhitespace}
         edits={edits}
         onEdit={onEdit}
+        status={status}
       />
     </div>
   );

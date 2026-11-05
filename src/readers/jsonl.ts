@@ -147,7 +147,7 @@ export async function readJsonl(
   // Second pass: grouping + unparseable detection
   const groupResult = await runGrouping(format);
 
-  // Build mutable index (groups can be updated by regroup)
+  // Build mutable index (the store writes a regroup's result into it at a commit)
   const index: FileIndex = {
     fingerprint: fp,
     lineCount: indexResult.lineCount,
@@ -180,15 +180,11 @@ export async function readJsonl(
     },
   };
 
-  // Regroup closure - keeps worker alive
+  // Regroup closure - keeps worker alive. It returns the new grouping and
+  // writes nothing into the index: the store writes it at a switch's commit,
+  // so a switch that stops leaves the index as it was (DR-001 rule 4, D-062)
   async function regroup(newFormat: RecordFormat): Promise<GroupResult> {
-    const result = await runGrouping(newFormat);
-    // Update index in place
-    index.groups = result.groups;
-    index.groupCount = result.groupCount;
-    index.unparseable = result.unparseable;
-    index.candidates = result.candidates;
-    return result;
+    return runGrouping(newFormat);
   }
 
   // Dispose function - terminates the worker

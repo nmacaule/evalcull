@@ -4,9 +4,13 @@
  * WP 6c: Refs name lines — compare mode shows the knockout pair of the
  * prompt's candidates, each card loaded from its own line; single mode acts
  * on the line ref "i".
+ * WP 6b: the prompt above the cards (D-013), card statuses (D-016), edits of
+ * non-string values as JSON (D-018), assistant-turn editing (D-017, D-019),
+ * ↑/↓ scroll (D-019), the unparseable filter (D-021), the position line
+ * (D-020) and the mapping modal's sample of up to 10 records (D-024).
  */
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useReviewStore } from './store/useReviewStore';
 import { formatPromptRef, parseRefLine } from './store/refs';
 import { buildGroupLines, deriveKnockout, promptCandidates } from './lib/knockout';
@@ -16,26 +20,66 @@ import { Editor } from './components/Editor';
 import { EditConfirmView } from './components/EditConfirmView';
 import { CheatSheet } from './components/CheatSheet';
 import { SchemaMapper } from './components/SchemaMapper';
+import { PromptHeader } from './components/PromptHeader';
 import { Button } from '@/components/ui/button';
-import { useLoadFile } from './hooks/useLoadFile';
+import { Dropzone } from './components/Dropzone';
+import { ProgressBar } from './components/ProgressBar';
+import { StorageIndicator } from './components/StorageIndicator';
+import { MetadataPanel } from './components/MetadataPanel';
+import { ExportPanel } from './components/ExportPanel';
+import { LabelNotesPanel } from './components/LabelNotesPanel';
+import { GoToDialog } from './components/GoToDialog';
+import { SearchBar } from './components/SearchBar';
 import { useHotkeys } from './hooks/useHotkeys';
 import { parsePath, normalisePath, stringifyPath, getByPath } from './lib/path';
+import { displayValue } from './lib/display';
+import { losslessParse, losslessStringify } from './lib/lossless';
 import type { CandidateRef, RecordFormat } from './types';
 import type { ParsedRecord } from './store/types';
 
+/** Indices of a conversation's assistant turns, by the format's assistant roles. */
+function assistantTurns(data: unknown, format: RecordFormat): number[] {
+  if (format.kind !== 'messages') return [];
+  const messages = getByPath(data, parsePath(format.path));
+  if (!Array.isArray(messages)) return [];
+  const turns: number[] = [];
+  messages.forEach((m, i) => {
+    const role = m && typeof m === 'object' ? (m as Record<string, unknown>)[format.roleKey] : undefined;
+    if (typeof role === 'string' && format.roles.assistant.includes(role)) turns.push(i);
+  });
+  return turns;
+}
+
+// An edit's path as the store keeps it: negative indices resolved against the
+// record the editor was opened for, a Normalized Path (RFC 9535 §2.3.3.2, §2.7; D-086)
+function normalisedPath(path: string, data: unknown): string {
+  return stringifyPath(
+    normalisePath(parsePath(path), (segs) => {
+      const arr = getByPath(data, segs);
+      return Array.isArray(arr) ? arr.length : 0;
+    })
+  );
+}
+
+function turnPath(format: Extract<RecordFormat, { kind: 'messages' }>, turn: number): string {
+  return `${format.path}[${turn}].${format.contentKey}`;
+}
+
 /**
  * Edit path for the candidate a ref names (WP 6c decision l): the response of a
- * row candidate "i", candidatesPath[k] for "i:k", chosen/rejected for preference.
+ * row candidate "i", candidatesPath[k] for "i:k", chosen/rejected for preference,
+ * the last assistant turn of a conversation (D-017).
  */
-function editPathFor(ref: CandidateRef, format: RecordFormat): string | null {
+function editPathFor(ref: CandidateRef, format: RecordFormat, data: unknown): string | null {
   const colon = ref.indexOf(':');
   const k = colon === -1 ? null : parseInt(ref.slice(colon + 1), 10);
   switch (format.kind) {
     case 'flat':
       return format.responsePath;
-    case 'messages':
-      // Default to first turn; user can select another turn in the card
-      return `${format.path}[0].${format.contentKey}`;
+    case 'messages': {
+      const turns = assistantTurns(data, format);
+      return turns.length ? turnPath(format, turns[turns.length - 1]) : null;
+    }
     case 'preference':
       return k === 1 ? format.rejectedPath : format.chosenPath;
     case 'candidates':
@@ -55,7 +99,20 @@ type FilterMode =
   | 'edited'
   | 'unparseable';
 
-const FILTER_CYCLE: FilterMode[] = ['all', 'unreviewed', 'kept', 'rejected', 'skipped', 'edited'];
+const FILTER_CYCLE: FilterMode[] = ['all', 'unreviewed', 'kept', 'rejected', 'skipped', 'edited', 'unparseable'];
+
+// A card's record and raw text, with the file and line they were read for (D-083, D-084)
+interface HeldRecord {
+  fingerprint: string;
+  line: number;
+  record: ParsedRecord;
+  text: string;
+}
+
+function heldFor(held: HeldRecord | null, fingerprint: string, ref: CandidateRef): HeldRecord | null {
+  if (!held || !ref) return null;
+  return held.fingerprint === fingerprint && held.line === parseRefLine(ref) ? held : null;
+}
 
 function App() {
   // Store state
@@ -86,6 +143,10 @@ function App() {
   const [showWhitespace, setShowWhitespace] = useState(false);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [schemaMapperOpen, setSchemaMapperOpen] = useState(false);
+  // The mapping modal holds a draft only once the user has changed a field (DR-001 rule 6, D-069)
+  const [mapperDraft, setMapperDraft] = useState(false);
+  // The file the mapping modal last opened by itself for: once per file, so Cancel keeps it closed (D-069)
+  const autoOpenedFor = useRef<string | null>(null);
   const [isRegrouping, setIsRegrouping] = useState(false);
 
   // Editing state (held in App per plan decision, not in store)
@@ -93,26 +154,54 @@ function App() {
     ref: CandidateRef;
     path: string;
     initialValue: string;
+    /** The value is not a string: edited as JSON text, parsed on save (D-018) */
+    isJson: boolean;
+    /** The data of the record the editor was opened for; the save resolves the path against it (D-085) */
+    data: unknown;
   } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Edit confirmation state (decision i)
   const [editConfirm, setEditConfirm] = useState<{
     ref: CandidateRef;
     path: string;
     originalValue: string;
+    /** The edit stored at the path before this one, which a discard restores (D-031) */
+    previous: { value: unknown } | null;
   } | null>(null);
 
   // Error state (surfaced in header, cleared on next success)
   const [lastError, setLastError] = useState<string | null>(null);
 
-  // Loaded records for current cursor
-  const [leftRecord, setLeftRecord] = useState<ParsedRecord | null>(null);
-  const [rightRecord, setRightRecord] = useState<ParsedRecord | null>(null);
-  const [leftText, setLeftText] = useState('');
-  const [rightText, setRightText] = useState('');
+  // Records read for the cards, each with the file and line it was read for
+  const [leftHeld, setLeftHeld] = useState<HeldRecord | null>(null);
+  const [rightHeld, setRightHeld] = useState<HeldRecord | null>(null);
 
-  // File loading
-  const { isLoading, error: loadError, progress, handleFileChange } = useLoadFile();
+  // Panels (WP 6b)
+  const storageState = useReviewStore((s) => s.storageState);
+  const sourceName = useReviewStore((s) => s.sourceName);
+  const counts = useReviewStore((s) => s.counts);
+  const [metadataOpen, setMetadataOpen] = useState(false);
+  const [labelNotes, setLabelNotes] = useState<'labels' | 'notes' | null>(null);
+  const [goToOpen, setGoToOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [dropConfirmOpen, setDropConfirmOpen] = useState(false);
+  // A file is opening, for every entry point: the store's switch (D-038, D-039,
+  // DR-001 rule 6); the app counts as modal meanwhile
+  const fileOpening = useReviewStore((s) => s.switching.kind === 'opening');
+  const fingerprint = useReviewStore((s) => s.fingerprint);
+
+  // A new file closes what was open on the previous one (D-038)
+  useEffect(() => {
+    setEditing(null);
+    setEditConfirm(null);
+    setEditError(null);
+    setLabelNotes(null);
+    setGoToOpen(false);
+    setSearchOpen(false);
+    setSchemaMapperOpen(false);
+  }, [fingerprint]);
 
   // Candidate model for the prompt at the cursor (compare mode, JSONL)
   const index = source?.kind === 'jsonl' ? source.index : null;
@@ -154,41 +243,65 @@ function App() {
         : '';
   const rightRef: CandidateRef = !singleCard && knockout?.shown ? knockout.shown.right : '';
 
-  // Load each shown candidate's own line
+  // A held record counts as loaded only for the file and line it was read for, so
+  // neither the cards nor the editor use the previous one while a line loads (D-083, D-084)
+  const leftShown = heldFor(leftHeld, fingerprint, leftRef);
+  const rightShown = heldFor(rightHeld, fingerprint, rightRef);
+  const leftRecord = leftShown?.record ?? null;
+  const rightRecord = rightShown?.record ?? null;
+  const leftText = leftShown?.text ?? '';
+  const rightText = rightShown?.text ?? '';
+
+  // Load each shown candidate's own line. A result that arrives after the
+  // cursor or the file moved on is ignored (React's ignore flag, PRD S112; D-065)
   useEffect(() => {
     if (!source || source.kind !== 'jsonl' || !leftRef) return;
+    let ignore = false;
+    const readFor = fingerprint;
 
     const loadRecords = async () => {
       try {
         const leftLine = parseRefLine(leftRef);
         const left = await record(leftLine);
-        setLeftRecord(left);
-        setLeftText(await source.readText(leftLine));
+        const leftRaw = await source.readText(leftLine);
+        if (ignore) return;
+        setLeftHeld({ fingerprint: readFor, line: leftLine, record: left, text: leftRaw });
 
         if (rightRef) {
           const rightLine = parseRefLine(rightRef);
           const right = await record(rightLine);
-          setRightRecord(right);
-          setRightText(await source.readText(rightLine));
+          const rightRaw = await source.readText(rightLine);
+          if (ignore) return;
+          setRightHeld({ fingerprint: readFor, line: rightLine, record: right, text: rightRaw });
         } else {
-          setRightRecord(null);
-          setRightText('');
+          setRightHeld(null);
         }
         setLastError(null);
       } catch (err) {
+        if (ignore) return;
         setLastError(`Failed to load records: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
 
     loadRecords();
-  }, [source, leftRef, rightRef, record]);
+    return () => {
+      ignore = true;
+    };
+  }, [source, fingerprint, leftRef, rightRef, record]);
 
-  // Auto-open SchemaMapper for unknown format
+  // Auto-open SchemaMapper for unknown format, once per file: Cancel keeps it
+  // closed, and Configure format opens it again (D-069)
   useEffect(() => {
-    if (source && format.kind === 'unknown' && !schemaMapperOpen) {
+    if (source && format.kind === 'unknown' && autoOpenedFor.current !== fingerprint) {
+      autoOpenedFor.current = fingerprint;
       setSchemaMapperOpen(true);
     }
-  }, [source, format.kind, schemaMapperOpen]);
+  }, [source, format.kind, fingerprint]);
+
+  // A closed mapping modal holds no draft
+  useEffect(() => {
+    if (!schemaMapperOpen) setMapperDraft(false);
+  }, [schemaMapperOpen]);
 
   // Default to raw view for unknown format
   useEffect(() => {
@@ -213,6 +326,36 @@ function App() {
     return focus === 0 ? leftRef : rightRef;
   }, [singleCard, focus, leftRef, rightRef]);
 
+  // Open the editor on a path of a ref, at its current value: the stored edit
+  // when there is one, else the record's; a non-string value as JSON text (D-018).
+  // The path is normalised once, here, against the record opened; the lookup,
+  // the save and the turn switch all use that one path (D-086)
+  const beginEdit = useCallback(
+    (ref: CandidateRef, rawPath: string, data: unknown) => {
+      try {
+        const path = normalisedPath(rawPath, data);
+        const stored = decisions.get(ref)?.edits;
+        const value =
+          stored && Object.prototype.hasOwnProperty.call(stored, path)
+            ? stored[path]
+            : getByPath(data, parsePath(path));
+        const isJson = value !== undefined && typeof value !== 'string';
+        setEditing({
+          ref,
+          path,
+          initialValue: isJson ? (losslessStringify(value) ?? '') : ((value as string | undefined) ?? ''),
+          isJson,
+          data,
+        });
+        setEditError(null);
+        setLastError(null);
+      } catch (err) {
+        setLastError(`Failed to open editor: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [decisions]
+  );
+
   // Open editor for focused candidate, at the path its ref names
   const openEditor = useCallback(() => {
     if (!leftRecord || (leftRecord && !leftRecord.ok)) return;
@@ -221,23 +364,13 @@ function App() {
     const currentRecord = focus === 0 || singleCard ? leftRecord : rightRecord;
     if (!currentRecord || !currentRecord.ok) return;
 
-    const path = editPathFor(ref, format);
-    if (path === null) return;
-
-    // Get initial value
-    try {
-      const segments = parsePath(path);
-      const value = getByPath(currentRecord.data, segments);
-      setEditing({
-        ref,
-        path,
-        initialValue: String(value ?? ''),
-      });
-      setLastError(null);
-    } catch (err) {
-      setLastError(`Failed to open editor: ${err instanceof Error ? err.message : String(err)}`);
+    const path = editPathFor(ref, format, currentRecord.data);
+    if (path === null) {
+      if (format.kind === 'messages') setLastError('No assistant turn to edit.');
+      return;
     }
-  }, [leftRecord, rightRecord, focus, singleCard, format, getFocusedRef]);
+    beginEdit(ref, path, currentRecord.data);
+  }, [leftRecord, rightRecord, focus, singleCard, format, getFocusedRef, beginEdit]);
 
   // Save editor
   const saveEditor = useCallback(() => {
@@ -249,6 +382,7 @@ function App() {
   const cancelEditor = useCallback(() => {
     setEditing(null);
     setEditConfirm(null);
+    setEditError(null);
   }, []);
 
   // Handle editor save
@@ -256,36 +390,47 @@ function App() {
     (newValue: string) => {
       if (!editing) return;
 
-      // Get the record to normalize the path
-      const currentRecord =
-        focus === 0 || singleCard ? leftRecord : rightRecord;
-      if (!currentRecord || !currentRecord.ok) return;
-
-      // Normalize path (convert negative indices to positive)
+      // The path was normalised when the editor opened, against the record it
+      // was opened for, never the focused card's (D-085, D-086)
       try {
-        const segments = parsePath(editing.path);
-        const normalizedSegments = normalisePath(segments, (segs) => {
-          const arr = getByPath(currentRecord.data, segs);
-          return Array.isArray(arr) ? arr.length : 0;
-        });
-        const normalizedPath = stringifyPath(normalizedSegments);
+        const normalizedPath = editing.path;
+
+        // A non-string value is saved as the JSON it was edited as (D-018)
+        let value: unknown = newValue;
+        if (editing.isJson) {
+          try {
+            value = losslessParse(newValue);
+          } catch {
+            setEditError('Not valid JSON: not saved.');
+            return;
+          }
+        }
+
+        // The edit this one replaces, if any, so a discard can restore it (D-031)
+        const stored = decisions.get(editing.ref)?.edits;
+        const previous =
+          stored && Object.prototype.hasOwnProperty.call(stored, normalizedPath)
+            ? { value: stored[normalizedPath] }
+            : null;
 
         // Save to store
-        edit(editing.ref, normalizedPath, newValue);
+        edit(editing.ref, normalizedPath, value);
 
         // Enter edit confirmation mode (decision i)
         setEditConfirm({
           ref: editing.ref,
           path: normalizedPath,
           originalValue: editing.initialValue,
+          previous,
         });
         setEditing(null);
+        setEditError(null);
         setLastError(null);
       } catch (err) {
         setLastError(`Failed to save edit: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
-    [editing, focus, singleCard, leftRecord, rightRecord, edit]
+    [editing, edit, decisions]
   );
 
   // Handle edit confirmation (decision i)
@@ -295,19 +440,20 @@ function App() {
 
   const handleEditConfirmDiscard = useCallback(() => {
     if (!editConfirm) return;
-    // Remove the edit by calling edit with undefined
-    edit(editConfirm.ref, editConfirm.path, undefined);
+    // Restore the edit this one replaced, or remove the edit when there was none (D-031)
+    edit(editConfirm.ref, editConfirm.path, editConfirm.previous ? editConfirm.previous.value : undefined);
     setEditConfirm(null);
   }, [editConfirm, edit]);
 
-  // Scroll handlers (no-op for now, could scroll the card)
-  const scrollUp = useCallback(() => {
-    // Could implement card scrolling
-  }, []);
-
-  const scrollDown = useCallback(() => {
-    // Could implement card scrolling
-  }, []);
+  // ↑/↓ scroll the focused card's content by 40 px (D-019, PRD §2.2)
+  const scrollFocusedCard = (delta: number) => {
+    const el = document.querySelector<HTMLElement>(
+      '[role="group"][aria-current="true"] [data-card-content]'
+    );
+    if (el) el.scrollTop += delta;
+  };
+  const scrollUp = useCallback(() => scrollFocusedCard(-40), []);
+  const scrollDown = useCallback(() => scrollFocusedCard(40), []);
 
   // Cycle filter
   const cycleFilter = useCallback(() => {
@@ -337,31 +483,36 @@ function App() {
   // Handle edit from card
   const handleCardEdit = useCallback(
     (ref: CandidateRef, path: string) => {
+      // Nothing opens while a switch is opening, by mouse as by key (DR-001 rule 6, D-072)
+      if (fileOpening) return;
       const currentRecord =
         ref === leftRef ? leftRecord : ref === rightRef ? rightRecord : null;
       if (!currentRecord || !currentRecord.ok) return;
-
-      try {
-        const segments = parsePath(path);
-        const value = getByPath(currentRecord.data, segments);
-        setEditing({
-          ref,
-          path,
-          initialValue: String(value ?? ''),
-        });
-        setLastError(null);
-      } catch (err) {
-        setLastError(`Failed to open editor: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      beginEdit(ref, path, currentRecord.data);
     },
-    [leftRecord, rightRecord, leftRef, rightRef]
+    [fileOpening, leftRecord, rightRecord, leftRef, rightRef, beginEdit]
   );
 
-  // Sample records for SchemaMapper
-  const sampleRecords = useMemo(() => {
-    if (!leftRecord || !leftRecord.ok) return [];
-    return [leftRecord.data];
-  }, [leftRecord]);
+  // Sample for SchemaMapper: up to 10 parseable records from line 0, as the
+  // detector samples (WP 5 decision a; D-024)
+  const [sampleRecords, setSampleRecords] = useState<unknown[]>([]);
+  useEffect(() => {
+    if (!schemaMapperOpen || !source || source.kind !== 'jsonl') return;
+    let cancelled = false;
+    (async () => {
+      const sample: unknown[] = [];
+      // Scan a bounded prefix so a file of unparseable lines cannot stall the modal
+      const limit = Math.min(source.index.lineCount, 1000);
+      for (let i = 0; i < limit && sample.length < 10; i++) {
+        const parsed = await record(i);
+        if (parsed.ok) sample.push(parsed.data);
+      }
+      if (!cancelled) setSampleRecords(sample);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [schemaMapperOpen, source, record]);
 
   // Register hotkeys
   useHotkeys({
@@ -386,81 +537,120 @@ function App() {
     showCheatSheet,
     scrollUp,
     scrollDown,
+    toggleMetadata: () => setMetadataOpen((prev) => !prev),
+    openLabels: () => setLabelNotes('labels'),
+    openNotes: () => setLabelNotes('notes'),
+    openGoTo: () => setGoToOpen(true),
+    openSearch: () => setSearchOpen(true),
     mode,
     groupSize,
-    isModalOpen: schemaMapperOpen || cheatSheetOpen,
+    // The search bar is not modal: keys typed in its field are form keys, and
+    // J/K stay live so a slow search can be left (its generation goes stale)
+    // The editor and its confirmation count as modal: single keys do nothing
+    // there; Mod+Enter, Esc and the confirmation's ←/→ are checked first (D-050)
+    isModalOpen:
+      editing !== null ||
+      editConfirm !== null ||
+      schemaMapperOpen ||
+      cheatSheetOpen ||
+      labelNotes !== null ||
+      goToOpen ||
+      exportOpen ||
+      dropConfirmOpen ||
+      fileOpening,
     isEditorOpen: editing !== null,
   });
 
-  // No source loaded - show file input
+  // No source loaded - the drop target and Open file button
   if (!source) {
-    return (
-      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
-        <h1 className="text-2xl font-semibold">evalcull</h1>
-        <p className="text-muted-foreground">
-          Load a JSONL file to start reviewing
-        </p>
-
-        <label className="cursor-pointer">
-          <Button asChild variant="outline" disabled={isLoading}>
-            <span>
-              {isLoading ? (
-                <>
-                  Loading...
-                  {progress && (
-                    <span className="ml-2 text-xs">
-                      {Math.round((progress.loaded / progress.total) * 100)}%
-                    </span>
-                  )}
-                </>
-              ) : (
-                'Load file'
-              )}
-            </span>
-          </Button>
-          <input
-            type="file"
-            accept=".jsonl"
-            className="hidden"
-            onChange={handleFileChange}
-            disabled={isLoading}
-          />
-        </label>
-
-        {loadError && (
-          <p className="text-sm text-destructive">{loadError}</p>
-        )}
-      </div>
-    );
+    return <Dropzone loaded={false} />;
   }
+
+  // No switch starts while a draft is open, since switching files would lose
+  // it: an edit (D-033), a labels and notes draft (D-037) or the mapping modal
+  // (D-044); a drop and Open anyway give the same reason (DR-001 rule 6, D-064)
+  const draftReason =
+    editing || editConfirm
+      ? 'Save or cancel the edit first.'
+      : labelNotes !== null
+        ? 'Save or cancel the labels and notes first.'
+        : schemaMapperOpen && mapperDraft
+          ? 'Apply or cancel the format first.'
+          : null;
+
+  // The drop target stays mounted on every screen while a file is open, so a
+  // drop never reaches the browser
+  const dropzone = (
+    <Dropzone
+      loaded={true}
+      onConfirmOpenChange={setDropConfirmOpen}
+      blockedReason={draftReason}
+    />
+  );
+
+  // The storage state stays visible on every screen while a file is open (Q6)
+  const storageBar = (
+    <div className="fixed top-2 right-4">
+      <StorageIndicator state={storageState} blockedReason={draftReason} />
+    </div>
+  );
+
+  // Every screen with a file open returns the same three slots, content, storage
+  // bar and drop target, so the Dropzone keeps its state across screens (D-039)
+  const withChrome = (content: React.ReactNode, showStorageBar: boolean) => (
+    <>
+      {content}
+      {showStorageBar ? storageBar : null}
+      {dropzone}
+    </>
+  );
 
   // Row-based sources not yet supported (WP 8)
   if (source.kind !== 'jsonl') {
-    return (
+    return withChrome(
       <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
         <h1 className="text-2xl font-semibold">evalcull</h1>
         <p className="text-muted-foreground">
           {source.container} files are not supported yet
         </p>
-      </div>
+      </div>,
+      true
     );
   }
 
   // Show regroup loading overlay
   if (isRegrouping) {
-    return (
+    return withChrome(
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4" />
           <p className="text-muted-foreground">Re-grouping records...</p>
         </div>
-      </div>
+      </div>,
+      true
     );
   }
 
   // Render editor if open
   if (editing) {
-    return (
+    // On a conversation, ↑ at the start or ↓ at the end moves the edit to the
+    // previous or next assistant turn while the text is unchanged (D-019)
+    // The turns of the record the editor was opened for (D-085)
+    let turnSwitch: { onPrev: () => void; onNext: () => void } | undefined;
+    if (format.kind === 'messages') {
+      const turns = assistantTurns(editing.data, format);
+      const at = turns.findIndex((t) => normalisedPath(turnPath(format, t), editing.data) === editing.path);
+      if (at !== -1) {
+        const move = (to: number) => {
+          if (to >= 0 && to < turns.length) {
+            beginEdit(editing.ref, turnPath(format, turns[to]), editing.data);
+          }
+        };
+        turnSwitch = { onPrev: () => move(at - 1), onNext: () => move(at + 1) };
+      }
+    }
+
+    return withChrome(
       <div className="min-h-screen bg-background text-foreground p-8">
         <div className="max-w-3xl mx-auto">
           <h2 className="text-lg font-semibold mb-4">
@@ -470,12 +660,16 @@ function App() {
             Path: <code className="font-mono">{editing.path}</code>
           </p>
           <Editor
+            key={`${editing.ref} ${editing.path}`}
             initialValue={editing.initialValue}
             onSave={handleEditorSave}
             onCancel={cancelEditor}
+            error={editError}
+            turnSwitch={turnSwitch}
           />
         </div>
-      </div>
+      </div>,
+      true
     );
   }
 
@@ -484,28 +678,30 @@ function App() {
     const currentEdits = decisions.get(editConfirm.ref)?.edits ?? {};
     const editedValue = currentEdits[editConfirm.path];
 
-    return (
-      <EditConfirmView
-        originalValue={editConfirm.originalValue}
-        editedValue={String(editedValue ?? '')}
-        onKeep={handleEditConfirmKeep}
-        onDiscard={handleEditConfirmDiscard}
-        onDismiss={cancelEditor}
-      />
+    return withChrome(
+      <>
+        <EditConfirmView
+          originalValue={editConfirm.originalValue}
+          editedValue={displayValue(editedValue)}
+          onKeep={handleEditConfirmKeep}
+          onDiscard={handleEditConfirmDiscard}
+          onDismiss={cancelEditor}
+        />
+      </>,
+      true
     );
   }
 
   // Main view
-  return (
+  return withChrome(
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
       <header className="border-b px-4 py-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <h1 className="font-semibold">evalcull</h1>
-            <span className="text-sm text-muted-foreground">
-              {useReviewStore.getState().sourceName}
-            </span>
+            <span className="text-sm text-muted-foreground">{sourceName}</span>
+            <StorageIndicator state={storageState} blockedReason={draftReason} />
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">
@@ -514,19 +710,31 @@ function App() {
             <Button
               variant="outline"
               size="sm"
+              disabled={fileOpening}
               onClick={() => setSchemaMapperOpen(true)}
             >
               Configure format
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setExportOpen(true)}>
+              Export
+            </Button>
           </div>
+        </div>
+        <div className="mt-2">
+          <ProgressBar counts={counts()} mode={mode} />
         </div>
         {lastError && (
           <div className="text-sm text-destructive mt-1">{lastError}</div>
         )}
       </header>
 
+      {searchOpen && <SearchBar onClose={() => setSearchOpen(false)} />}
+
       {/* Main content */}
       <main className="p-4">
+        <div className="max-w-6xl mx-auto">
+          <PromptHeader record={leftRecord} format={format} showWhitespace={showWhitespace} />
+        </div>
         {mode === 'compare' ? (
           leftRecord && (singleCard || rightRecord) ? (
             singleCard || !knockout ? (
@@ -544,6 +752,7 @@ function App() {
                   showWhitespace={showWhitespace}
                   edits={leftEdits}
                   onEdit={(path) => handleCardEdit(leftRef, path)}
+                  status={decisions.get(leftRef)?.status}
                 />
               </div>
             ) : (
@@ -563,6 +772,8 @@ function App() {
                 knockout={knockout}
                 candidateCount={candidateCount}
                 onEdit={handleCardEdit}
+                leftStatus={decisions.get(leftRef)?.status}
+                rightStatus={decisions.get(rightRef)?.status}
               />
             )
           ) : (
@@ -578,6 +789,7 @@ function App() {
             showWhitespace={showWhitespace}
             edits={leftEdits}
             onEdit={(path) => handleCardEdit(leftRef, path)}
+            status={decisions.get(leftRef)?.status}
           />
         ) : (
           <div className="text-center text-muted-foreground">Loading...</div>
@@ -585,22 +797,49 @@ function App() {
 
         {/* Navigation info */}
         <div className="mt-4 text-center text-sm text-muted-foreground">
-          Prompt {cursor + 1} of {source.index.groupCount}
+          {mode === 'compare'
+            ? `Prompt ${cursor + 1} of ${source.index.groupCount}`
+            : `Record ${cursor + 1} of ${source.index.lineCount}`}
         </div>
+
+        {metadataOpen && (
+          <div className="max-w-6xl mx-auto">
+            <MetadataPanel
+              record={!singleCard && focus === 1 ? rightRecord : leftRecord}
+              format={format}
+            />
+          </div>
+        )}
       </main>
 
+      <ExportPanel open={exportOpen} onOpenChange={setExportOpen} />
+      <LabelNotesPanel
+        open={labelNotes !== null}
+        onOpenChange={(open) => !open && setLabelNotes(null)}
+        candidateRef={getFocusedRef()}
+        focusField={labelNotes ?? 'labels'}
+      />
+      <GoToDialog
+        open={goToOpen}
+        onOpenChange={setGoToOpen}
+        mode={mode}
+        total={mode === 'compare' ? source.index.groupCount : source.index.lineCount}
+      />
       {/* Cheat sheet dialog */}
       <CheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
 
-      {/* Schema mapper dialog */}
+      {/* Schema mapper dialog, a fresh copy per file so its fields start from that file's format (D-044) */}
       <SchemaMapper
+        key={fingerprint}
         open={schemaMapperOpen}
         onOpenChange={setSchemaMapperOpen}
+        onDraftChange={() => setMapperDraft(true)}
         currentFormat={format}
         sampleRecords={sampleRecords}
         onApply={handleSchemaMapperApply}
       />
-    </div>
+    </div>,
+    false
   );
 }
 

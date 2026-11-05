@@ -72,7 +72,9 @@ Collision probability: ~3e-8 at 1M distinct prompts.
 
 A format change from the mapping modal re-runs the second pass through the
 reader's `regroup()`, which recomputes `groups`, `groupCount`, `unparseable`
-and `candidates`.
+and `candidates` and returns them. It writes nothing into the index: the store
+writes the result at a switch's commit, so a switch that stops leaves the index
+as it was (DR-001 rule 4 as amended 5 Nov 2026, D-062).
 
 ## Candidates per line (WP 6c)
 

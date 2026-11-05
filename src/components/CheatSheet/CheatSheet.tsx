@@ -1,6 +1,7 @@
 /**
  * Cheat sheet dialog showing hotkey table.
  * WP 6a: Rendered from shared HOTKEY_TABLE constant.
+ * WP 6b: grouped by each entry's group, the panel keys included.
  */
 
 import {
@@ -9,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { HOTKEY_TABLE } from '../../lib/hotkeyTable';
+import { HOTKEY_GROUPS, HOTKEY_TABLE } from '../../lib/hotkeyTable';
 
 export interface CheatSheetProps {
   open: boolean;
@@ -33,37 +34,24 @@ function formatKey(key: string): string {
 }
 
 export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
-  // Group hotkeys by category
-  const preferenceKeys = HOTKEY_TABLE.filter(
-    (h) => h.action === 'prefer' || h.action === 'setStrength'
-  );
-  const decisionKeys = HOTKEY_TABLE.filter((h) => h.action === 'decide');
-  const navigationKeys = HOTKEY_TABLE.filter((h) =>
-    ['next', 'prev', 'toggleFocus', 'scrollUp', 'scrollDown'].includes(h.action)
-  );
-  const editKeys = HOTKEY_TABLE.filter((h) =>
-    ['openEditor', 'saveEditor', 'cancelEditor'].includes(h.action)
-  );
-  const viewKeys = HOTKEY_TABLE.filter((h) =>
-    ['toggleRaw', 'toggleWhitespace', 'cycleFilter', 'showCheatSheet'].includes(
-      h.action
-    )
-  );
-  const historyKeys = HOTKEY_TABLE.filter((h) =>
-    ['undo', 'redo'].includes(h.action)
-  );
-
+  // Every entry names its group, so every §2.2 key appears exactly once
   const renderGroup = (title: string, keys: typeof HOTKEY_TABLE) => (
-    <div className="mb-4">
+    <div className="mb-4" key={title}>
       <h3 className="text-sm font-semibold mb-2">{title}</h3>
       <div className="grid gap-1">
         {keys.map((entry) => (
           <div
             key={entry.key}
-            className="flex items-center justify-between text-sm"
+            className="flex items-center justify-between gap-4 text-sm"
+            data-hotkey={entry.key}
           >
-            <span className="text-muted-foreground">{entry.description}</span>
-            <span className="font-mono text-xs bg-muted px-2 py-0.5 rounded">
+            <span className="text-muted-foreground">
+              {entry.description}
+              {entry.modes.length === 1 && entry.modes[0] === 'compare' && (
+                <span className="ml-1 text-xs">(compare mode)</span>
+              )}
+            </span>
+            <span className="font-mono text-xs bg-muted px-2 py-0.5 rounded whitespace-nowrap">
               {formatKey(entry.key)}
               {entry.altKey && (
                 <span className="text-muted-foreground">
@@ -85,12 +73,12 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
           <DialogTitle>Keyboard Shortcuts</DialogTitle>
         </DialogHeader>
         <div className="mt-4">
-          {renderGroup('Preferences (Compare Mode)', preferenceKeys)}
-          {renderGroup('Decisions', decisionKeys)}
-          {renderGroup('Navigation', navigationKeys)}
-          {renderGroup('Editing', editKeys)}
-          {renderGroup('View', viewKeys)}
-          {renderGroup('History', historyKeys)}
+          {HOTKEY_GROUPS.map((group) =>
+            renderGroup(
+              group,
+              HOTKEY_TABLE.filter((h) => h.group === group)
+            )
+          )}
         </div>
         <div className="mt-4 text-xs text-muted-foreground text-center">
           Press ? to toggle this dialog

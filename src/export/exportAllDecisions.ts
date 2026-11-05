@@ -5,8 +5,9 @@
 
 import type { RecordSource, CandidateRef, Decision, RecordFormat } from '../types';
 import type { ParsedRecord } from '../store/types';
-import { formatPromptRef, parseRefLine } from '../store/refs';
+import { formatPromptRef, groupByLine, lineDecision, parseRefLine } from '../store/refs';
 import { losslessStringify } from '../lib/lossless';
+import { parsePath, setByPath } from '../lib/path';
 
 const YIELD_INTERVAL = 5000;
 
@@ -77,17 +78,20 @@ function candidateDecisionsByLine(
  * @param record Function to fetch parsed record
  * @param format The record format, which decides whether lines carry in-record candidates
  * @param onProgress Optional progress callback
+ * @param include Optional line filter; a line it rejects is not written (D-022)
  */
 export async function exportAllDecisions(
   src: RecordSource,
   decisions: Map<CandidateRef, Decision>,
   record: (i: number) => Promise<ParsedRecord>,
   format: RecordFormat,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  include?: (i: number) => boolean
 ): Promise<Blob> {
   const parts: string[] = [];
   const total = src.kind === 'jsonl' ? src.index.lineCount : src.count;
   const candidatesByLine = candidateDecisionsByLine(src, decisions, format);
+  const byLine = groupByLine(decisions);
 
   // _triage, then after updatedAt the per-candidate triage of an in-record line
   // with at least one candidate decision, keyed by k (D-011); absent otherwise
@@ -109,16 +113,28 @@ export async function exportAllDecisions(
   };
 
   for (let i = 0; i < total; i++) {
+    if (include && !include(i)) continue;
+
     const parsed = await record(i);
     const ref = formatPromptRef(i);
     const d = decisions.get(ref);
 
     if (parsed.ok) {
-      // Append _triage after record's own keys
-      const output = {
-        ...(parsed.data as Record<string, unknown>),
-        _triage: triageFor(i, d),
-      };
+      // The record with the merged edits of "i" and "i:k" applied; edited
+      // follows the merged line (D-028)
+      const edits = lineDecision(decisions, byLine, i)?.edits ?? {};
+      let data = parsed.data;
+      for (const [path, value] of Object.entries(edits)) {
+        data = setByPath(data, parsePath(path), value);
+      }
+      const triage = triageFor(i, d);
+      triage.edited = Object.keys(edits).length > 0;
+
+      // A record that is not a JSON object keeps its value under _value (D-023)
+      const isObject = data !== null && typeof data === 'object' && !Array.isArray(data);
+      const output = isObject
+        ? { ...(data as Record<string, unknown>), _triage: triage }
+        : { _value: data, _triage: triage };
       parts.push(losslessStringify(output) + '\n');
     } else {
       // Unparseable: emit raw text with _triage only

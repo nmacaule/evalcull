@@ -1,13 +1,14 @@
 /**
  * Central hotkey registry using react-hotkeys-hook.
  * WP 6a: Mode-aware bindings, respects form field focus.
+ * WP 6b: the panel keys M, L, N, G and / (PRD §2.2).
  */
 
 import { useHotkeys as useHotkeysHook } from 'react-hotkeys-hook';
 import { useCallback } from 'react';
 import type { CandidateRef } from '../types';
 import type { Preference, DecisionStatus } from '../types';
-import { HOTKEY_TABLE, getTestableHotkeys } from '../lib/hotkeyTable';
+import { HOTKEY_TABLE } from '../lib/hotkeyTable';
 
 export interface HotkeyHandlers {
   // Preference actions
@@ -47,6 +48,13 @@ export interface HotkeyHandlers {
   scrollUp: () => void;
   scrollDown: () => void;
 
+  // Panels (WP 6b)
+  toggleMetadata?: () => void;
+  openLabels?: () => void;
+  openNotes?: () => void;
+  openGoTo?: () => void;
+  openSearch?: () => void;
+
   // Mode and state
   mode: 'compare' | 'single';
   groupSize: number;
@@ -81,6 +89,11 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     showCheatSheet,
     scrollUp,
     scrollDown,
+    toggleMetadata,
+    openLabels,
+    openNotes,
+    openGoTo,
+    openSearch,
     mode,
     groupSize,
     isModalOpen,
@@ -295,7 +308,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (!isEditorOpen) return;
       saveEditor();
     },
-    { enableOnFormTags: true }
+    { enableOnFormTags: ['textarea'] } // PRD §3.10 (D-027)
   );
 
   useHotkeysHook(
@@ -305,7 +318,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
         cancelEditor();
       }
     },
-    { enableOnFormTags: true }
+    { enableOnFormTags: ['textarea'] } // PRD §3.10 (D-027)
   );
 
   // Undo/redo
@@ -365,7 +378,55 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     { enableOnFormTags: false, useKey: true }
   );
 
-  // Panel hotkeys (no-ops in 6a) - not registered
+  // Panel hotkeys (WP 6b); preventDefault so the key does not type into the
+  // field the panel focuses as it opens
+  useHotkeysHook(
+    'm',
+    () => {
+      if (isModalOpen) return;
+      toggleMetadata?.();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
+
+  useHotkeysHook(
+    'l',
+    (e) => {
+      if (isModalOpen) return;
+      e.preventDefault();
+      openLabels?.();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
+
+  useHotkeysHook(
+    'n',
+    (e) => {
+      if (isModalOpen) return;
+      e.preventDefault();
+      openNotes?.();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
+
+  useHotkeysHook(
+    'g',
+    (e) => {
+      if (isModalOpen) return;
+      e.preventDefault();
+      openGoTo?.();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
+
+  useHotkeysHook(
+    '/',
+    (e) => {
+      if (isModalOpen) return;
+      e.preventDefault();
+      openSearch?.();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
 }
 
-export { getTestableHotkeys };

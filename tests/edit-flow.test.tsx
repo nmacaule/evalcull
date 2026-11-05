@@ -4,6 +4,10 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import App from '../src/App';
+import { losslessStringify } from '../src/lib/lossless';
+import { makeSource, press, loadSource, card, resetStore, FLAT_IO, MESSAGES } from './helpers/app';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import 'fake-indexeddb/auto';
@@ -339,5 +343,166 @@ describe('edit flow', () => {
       expect(outputLines[1]).toBe(lines[1]);
       expect(outputLines[2]).toBe(lines[2]);
     });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// App edit flow (WP 6b defects)
+// -----------------------------------------------------------------------------
+
+const CONVERSATION =
+  '{"messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},' +
+  '{"role":"assistant","content":"a1"},{"role":"user","content":"u2"},{"role":"assistant","content":"a2"}]}';
+
+function editor(): HTMLTextAreaElement {
+  return screen.getByLabelText('Edit content') as HTMLTextAreaElement;
+}
+
+describe('App edit flow (WP 6b)', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it('the card shows the edited response after saving (D-014)', async () => {
+    await loadSource(makeSource(['{"instruction":"q","output":"red"}'], [0], [1]), FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+
+    press('e', 'KeyE');
+    fireEvent.change(editor(), { target: { value: 'crimson' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+    await waitFor(() => expect(screen.getByText('Confirm Edit')).toBeInTheDocument());
+    press('ArrowRight', 'ArrowRight');
+
+    await waitFor(() => expect(card(container, '0').textContent).toContain('crimson'));
+    expect(card(container, '0').textContent).not.toContain('red');
+  });
+
+  it('with the editor open, single keys pressed outside its textarea do nothing (D-050)', async () => {
+    await loadSource(
+      makeSource(['{"instruction":"q","output":"red"}', '{"instruction":"r","output":"blue"}'], [0, 1], [1, 1]),
+      FLAT_IO
+    );
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+
+    press('e', 'KeyE');
+    fireEvent.change(editor(), { target: { value: 'crimson' } });
+    // Keys reach the document body once the textarea has lost focus
+    press('a', 'KeyA');
+    press('j', 'KeyJ');
+    press('e', 'KeyE');
+
+    const s = useReviewStore.getState();
+    expect({ status: s.decisions.get('0')?.status, cursor: s.cursor, text: editor().value }).toEqual({
+      status: undefined,
+      cursor: 0,
+      text: 'crimson',
+    });
+  });
+
+  it('E on a conversation opens the last assistant turn (D-017)', async () => {
+    await loadSource(makeSource([CONVERSATION], [0], [1]), MESSAGES);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a2'));
+
+    press('e', 'KeyE');
+
+    expect(editor().value).toBe('a2');
+    expect(screen.getByText('messages[4].content')).toBeInTheDocument();
+  });
+
+  it('editing an object value round-trips its JSON (D-018)', async () => {
+    await loadSource(makeSource(['{"instruction":"q","output":{"a":1.0}}'], [0], [1]), FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('"a"'));
+
+    press('e', 'KeyE');
+    expect(editor().value).toBe('{"a":1.0}');
+
+    fireEvent.change(editor(), { target: { value: '{"a":' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+    expect(screen.getByText('Not valid JSON: not saved.')).toBeInTheDocument();
+    expect(editor()).toBeInTheDocument();
+    expect(useReviewStore.getState().decisions.get('0')?.edits).toBeUndefined();
+
+    fireEvent.change(editor(), { target: { value: '{"a":2}' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+
+    await waitFor(() => expect(screen.getByText('Confirm Edit')).toBeInTheDocument());
+    expect(screen.getByText('{"a":2}')).toBeInTheDocument();
+    const value = useReviewStore.getState().decisions.get('0')?.edits?.['output'];
+    expect(typeof value).toBe('object');
+    expect(losslessStringify(value)).toBe('{"a":2}');
+  });
+
+  it('ArrowUp at the start of an unchanged edit moves it to the previous assistant turn (D-019)', async () => {
+    await loadSource(makeSource([CONVERSATION], [0], [1]), MESSAGES);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a2'));
+
+    press('e', 'KeyE');
+    expect(screen.getByText('messages[4].content')).toBeInTheDocument();
+    expect(
+      screen.getByText('↑ at the start or ↓ at the end switches assistant turns while the text is unchanged.')
+    ).toBeInTheDocument();
+    editor().setSelectionRange(0, 0);
+    press('ArrowUp', 'ArrowUp', {}, editor());
+
+    await waitFor(() => expect(editor().value).toBe('a1'));
+    expect(screen.getByText('messages[2].content')).toBeInTheDocument();
+
+    // Back to the last turn, then type: with unsaved text the caret moves, the turn does not
+    press('Escape', 'Escape', {}, editor());
+    press('e', 'KeyE');
+    expect(screen.getByText('messages[4].content')).toBeInTheDocument();
+    fireEvent.change(editor(), { target: { value: 'a2z' } });
+    editor().setSelectionRange(0, 0);
+    press('ArrowUp', 'ArrowUp', {}, editor());
+
+    expect(screen.getByText('messages[4].content')).toBeInTheDocument();
+    expect(editor().value).toBe('a2z');
+  });
+
+  it('discarding a second edit keeps the first, kept edit (D-031)', async () => {
+    await loadSource(makeSource(['{"instruction":"q","output":"red"}'], [0], [1]), FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+
+    press('e', 'KeyE');
+    fireEvent.change(editor(), { target: { value: 'crimson' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+    await waitFor(() => expect(screen.getByText('Confirm Edit')).toBeInTheDocument());
+    press('ArrowRight', 'ArrowRight');
+    await waitFor(() => expect(card(container, '0').textContent).toContain('crimson'));
+
+    press('e', 'KeyE');
+    expect(editor().value).toBe('crimson');
+    fireEvent.change(editor(), { target: { value: 'scarlet' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+    await waitFor(() => expect(screen.getByText('Confirm Edit')).toBeInTheDocument());
+    press('ArrowLeft', 'ArrowLeft');
+
+    await waitFor(() => expect(card(container, '0').textContent).toContain('crimson'));
+    expect(useReviewStore.getState().decisions.get('0')?.edits).toEqual({ output: 'crimson' });
+  });
+
+  it('a file dropped while the editor is open does not reach the browser (D-033)', async () => {
+    await loadSource(makeSource(['{"instruction":"q","output":"red"}'], [0], [1]), FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+    press('e', 'KeyE');
+    expect(editor()).toBeInTheDocument();
+
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [new File(['{}\n'], 'b.jsonl')] } });
+    act(() => {
+      window.dispatchEvent(drop);
+    });
+
+    expect(drop.defaultPrevented).toBe(true);
+    expect(editor()).toBeInTheDocument();
+    expect(screen.getByText('Save or cancel the edit first.')).toBeInTheDocument();
+    expect(screen.queryByText('Open b.jsonl? Changes to the current file are saved first.')).toBeNull();
   });
 });

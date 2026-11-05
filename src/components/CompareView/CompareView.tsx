@@ -5,7 +5,7 @@
  * badge on the incumbent, and the judged preference once the prompt is complete.
  */
 
-import type { CandidateRef, Preference, RecordFormat } from '../../types';
+import type { CandidateRef, DecisionStatus, Preference, RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import type { EditValue } from '../../store/types';
 import type { KnockoutState } from '../../lib/knockout';
@@ -33,6 +33,9 @@ export interface CompareViewProps {
   /** N, the number of candidates of the prompt */
   candidateCount: number;
   onEdit?: (ref: CandidateRef, path: string) => void;
+  /** Status of each shown candidate (D-016) */
+  leftStatus?: DecisionStatus;
+  rightStatus?: DecisionStatus;
 }
 
 const JUDGED_LABEL: Record<Preference, string> = {
@@ -58,6 +61,8 @@ export function CompareView({
   knockout,
   candidateCount,
   onEdit,
+  leftStatus,
+  rightStatus,
 }: CompareViewProps) {
   const incumbentSide = knockout.incumbent?.side;
   const judged = knockout.complete ? knockout.shown?.judged : undefined;
@@ -84,6 +89,7 @@ export function CompareView({
           edits={leftEdits}
           onEdit={onEdit ? (path) => onEdit(leftRef, path) : undefined}
           badge={incumbentSide === 'left' ? 'current best' : undefined}
+          status={leftStatus}
         />
 
         {/* Right candidate */}
@@ -98,6 +104,7 @@ export function CompareView({
           edits={rightEdits}
           onEdit={onEdit ? (path) => onEdit(rightRef, path) : undefined}
           badge={incumbentSide === 'right' ? 'current best' : undefined}
+          status={rightStatus}
         />
       </div>
 
