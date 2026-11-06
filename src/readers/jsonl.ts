@@ -65,6 +65,9 @@ export async function readJsonl(
 
   const worker = new IndexerWorker();
 
+  // Performance marks for the §5 Performance row, read by the Playwright measurements
+  performance.mark('evalcull:index:start');
+
   // First pass: byte indexing
   const indexResult = await new Promise<{
     starts: Float64Array;
@@ -86,6 +89,8 @@ export async function readJsonl(
     const message: IndexerMessage = { type: 'index', blob: file };
     worker.postMessage(message);
   });
+  performance.mark('evalcull:first-pass:end');
+  performance.measure('evalcull:first-pass', 'evalcull:index:start', 'evalcull:first-pass:end');
 
   // Determine format: use provided or detect
   let format: RecordFormat;
@@ -146,6 +151,8 @@ export async function readJsonl(
 
   // Second pass: grouping + unparseable detection
   const groupResult = await runGrouping(format);
+  performance.mark('evalcull:second-pass:end');
+  performance.measure('evalcull:second-pass', 'evalcull:first-pass:end', 'evalcull:second-pass:end');
 
   // Build mutable index (the store writes a regroup's result into it at a commit)
   const index: FileIndex = {

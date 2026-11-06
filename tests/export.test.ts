@@ -6,6 +6,7 @@ import { buildExport } from '../src/export/buildExport';
 import { computeExportStats } from '../src/export/stats';
 import { exportRows } from '../src/export/exportRows';
 import { exportLines } from '../src/export/exportLines';
+import { exportAllDecisions } from '../src/export/exportAllDecisions';
 import type {
   RecordSource,
   RecordFormat,
@@ -30,31 +31,52 @@ function createMockJsonlSource(
   records: unknown[],
   unparseable: number[] = []
 ): Extract<RecordSource, { kind: 'jsonl' }> {
+  return createMockJsonlSourceFromLines(records.map((r) => JSON.stringify(r)), unparseable);
+}
+
+/** A JSONL source serving the given lines as written, each terminated by LF. */
+function createMockJsonlSourceFromLines(
+  lines: string[],
+  unparseable: number[] = [],
+  eols: number[] = lines.map(() => 1)
+): Extract<RecordSource, { kind: 'jsonl' }> {
+  // Each line's terminator by its eol code (0 none, 1 LF, 2 CRLF)
+  const term = (i: number) => (eols[i] === 2 ? '\r\n' : eols[i] === 1 ? '\n' : '');
+  // Offsets of the bytes readRawRange serves, as the RecordSource contract requires:
+  // the windowed exporters read lines out of a range by them (DR-013)
+  const starts = new Float64Array(lines.length);
+  const ends = new Float64Array(lines.length);
+  let pos = 0;
+  lines.forEach((l, i) => {
+    starts[i] = pos;
+    pos += Buffer.byteLength(l);
+    ends[i] = pos;
+    pos += term(i).length;
+  });
   const idx: FileIndex = {
     fingerprint: 'test',
-    lineCount: records.length,
-    starts: Float64Array.from(records.map((_, i) => i * 100)),
-    ends: Float64Array.from(records.map((_, i) => i * 100 + 50)),
-    eols: Uint8Array.from(records.map(() => 1)),
+    lineCount: lines.length,
+    starts,
+    ends,
+    eols: Uint8Array.from(eols),
     hasBom: false,
-    groups: Uint32Array.from(records.map((_, i) => i)),
-    groupCount: records.length,
+    groups: Uint32Array.from(lines.map((_, i) => i)),
+    groupCount: lines.length,
     unparseable: Uint32Array.from(unparseable),
-    candidates: new Uint16Array(records.length).fill(1),
+    candidates: new Uint16Array(lines.length).fill(1),
   };
 
   return {
     kind: 'jsonl',
     index: idx,
     async readText(i: number): Promise<string> {
-      return JSON.stringify(records[i]);
+      return lines[i];
     },
     async readRaw(i: number): Promise<Blob> {
-      const text = JSON.stringify(records[i]) + '\n';
-      return new Blob([text]);
+      return new Blob([lines[i] + term(i)]);
     },
     async readRawRange(from: number, to: number): Promise<Blob> {
-      return new Blob(records.slice(from, to + 1).map((r) => JSON.stringify(r) + '\n'));
+      return new Blob(lines.slice(from, to + 1).map((l, k) => l + term(from + k)));
     },
   };
 }
@@ -244,12 +266,17 @@ describe('buildExport dispatch (WP 4)', () => {
 });
 
 describe("exportLines reads unedited lines by run (D-006)", () => {
-  it('exports 10,000 unedited lines with one edit in the middle in exactly 2 raw reads', async () => {
+  it('exports 10,000 unedited lines with one edit in the middle in at most ceil(bytes / 8 MB) range reads and no readText (D-006, DR-013)', async () => {
     const records = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
     const base = createMockJsonlSource(records);
     let rawReads = 0;
+    let textReads = 0;
     const src = {
       ...base,
+      readText: async (i: number) => {
+        textReads++;
+        return base.readText(i);
+      },
       readRaw: async (i: number) => {
         rawReads++;
         return base.readRaw(i);
@@ -259,20 +286,153 @@ describe("exportLines reads unedited lines by run (D-006)", () => {
         return new Blob(records.slice(from, to + 1).map((r) => JSON.stringify(r) + '\n'));
       },
     };
+    // 10,000 lines of 8 bytes plus the id's digits (38,890 digits in all): 118,890 bytes
+    const bytes = records.reduce((sum, r) => sum + Buffer.byteLength(JSON.stringify(r)) + 1, 0);
+    expect(bytes).toBe(118_890);
     const decisions = new Map<CandidateRef, Decision>([
       ['5000', { status: 'unreviewed', edits: { id: 'edited' }, updatedAt: 1 }],
     ]);
 
     const blob = await exportLines(src, decisions, () => true, { bom: 'keep' });
 
-    // Lines 0..4999 and 5001..9999 are one read each; line 5000 is re-serialised from readText
-    expect(rawReads).toBe(2);
+    // One window covers the file; line 5000 is re-serialised from the window's bytes (DR-013)
+    expect(rawReads).toBeLessThanOrEqual(Math.ceil(bytes / (8 * 1024 * 1024)));
+    expect(textReads).toBe(0);
     const lines = (await blobToString(blob)).split('\n');
     expect(lines.length).toBe(10001);
     expect(lines[4999]).toBe('{"id":4999}');
     expect(lines[5000]).toBe('{"id":"edited"}');
     expect(lines[5001]).toBe('{"id":5001}');
     expect(lines[10000]).toBe('');
+  });
+});
+
+describe('exportLines reads in windows (D-094, DR-013)', () => {
+  it('exports 200,000 lines with 2,000 edited in at most ceil(bytes / 8 MB) range reads and no readText (D-094)', async () => {
+    const pad = 'x'.repeat(80);
+    const lines = Array.from({ length: 200_000 }, (_, i) => `{"id":${i},"pad":"${pad}"}`);
+    const bytes = lines.reduce((sum, l) => sum + Buffer.byteLength(l) + 1, 0);
+    const starts = new Float64Array(lines.length);
+    const ends = new Float64Array(lines.length);
+    let pos = 0;
+    for (let i = 0; i < lines.length; i++) {
+      starts[i] = pos;
+      pos += Buffer.byteLength(lines[i]);
+      ends[i] = pos;
+      pos += 1;
+    }
+    let rangeReads = 0;
+    let textReads = 0;
+    const src = {
+      kind: 'jsonl' as const,
+      index: {
+        fingerprint: 'fp',
+        lineCount: lines.length,
+        starts,
+        ends,
+        eols: new Uint8Array(lines.length).fill(1),
+        hasBom: false,
+        groups: Uint32Array.from(lines.keys()),
+        groupCount: lines.length,
+        unparseable: new Uint32Array(0),
+        candidates: new Uint16Array(lines.length).fill(1),
+      },
+      readText: async (i: number) => {
+        textReads++;
+        return lines[i];
+      },
+      readRaw: async (i: number) => new Blob([lines[i] + '\n']),
+      readRawRange: async (from: number, to: number) => {
+        rangeReads++;
+        return new Blob(lines.slice(from, to + 1).map((l) => l + '\n'));
+      },
+    };
+    const decisions = new Map<CandidateRef, Decision>();
+    for (let i = 0; i < lines.length; i += 100) {
+      decisions.set(String(i), { status: 'kept', edits: { pad: 'edited' }, updatedAt: 1 });
+    }
+
+    const blob = await exportLines(src, decisions, () => true, { bom: 'keep' });
+
+    // 200,000 lines of 97 bytes plus the id's digits (1,088,890 digits in all):
+    // 20,488,890 bytes, so at most three windows of 8 MB
+    expect(bytes).toBe(20_488_890);
+    expect(rangeReads).toBeLessThanOrEqual(Math.ceil(bytes / (8 * 1024 * 1024)));
+    expect(textReads).toBe(0);
+    const out = (await blobToString(blob)).split('\n');
+    expect(out.length).toBe(200_001);
+    expect(out[0]).toBe('{"id":0,"pad":"edited"}');
+    expect(out[1]).toBe(`{"id":1,"pad":"${pad}"}`);
+    expect(out[199_900]).toBe('{"id":199900,"pad":"edited"}');
+    expect(out[199_999]).toBe(`{"id":199999,"pad":"${pad}"}`);
+    expect(out[200_000]).toBe('');
+  });
+});
+
+describe('all.decisions.jsonl reads in windows (D-095, DR-013)', () => {
+  it('exports 100,000 lines with 1,000 edited in at most ceil(bytes / 8 MB) range reads, no readText and no record() (D-095)', async () => {
+    const pad = 'x'.repeat(80);
+    const lines = Array.from({ length: 100_000 }, (_, i) => `{"id":${i},"pad":"${pad}"}`);
+    const starts = new Float64Array(lines.length);
+    const ends = new Float64Array(lines.length);
+    let pos = 0;
+    for (let i = 0; i < lines.length; i++) {
+      starts[i] = pos;
+      pos += Buffer.byteLength(lines[i]);
+      ends[i] = pos;
+      pos += 1;
+    }
+    const bytes = pos;
+    let rangeReads = 0;
+    let textReads = 0;
+    let recordCalls = 0;
+    const src = {
+      kind: 'jsonl' as const,
+      index: {
+        fingerprint: 'fp',
+        lineCount: lines.length,
+        starts,
+        ends,
+        eols: new Uint8Array(lines.length).fill(1),
+        hasBom: false,
+        groups: Uint32Array.from(lines.keys()),
+        groupCount: lines.length,
+        unparseable: new Uint32Array(0),
+        candidates: new Uint16Array(lines.length).fill(1),
+      },
+      readText: async (i: number) => {
+        textReads++;
+        return lines[i];
+      },
+      readRaw: async (i: number) => new Blob([lines[i] + '\n']),
+      readRawRange: async (from: number, to: number) => {
+        rangeReads++;
+        return new Blob(lines.slice(from, to + 1).map((l) => l + '\n'));
+      },
+    };
+    const record = async (i: number): Promise<ParsedRecord> => {
+      recordCalls++;
+      return { index: i, ok: true, data: JSON.parse(lines[i]) };
+    };
+    const decisions = new Map<CandidateRef, Decision>();
+    for (let i = 0; i < lines.length; i += 100) {
+      decisions.set(String(i), { status: 'kept', edits: { pad: 'edited' }, updatedAt: 1 });
+    }
+
+    const blob = await exportAllDecisions(src, decisions, record, { kind: 'unknown' });
+
+    // 100,000 lines of 97 bytes plus the id's digits (488,890 digits in all):
+    // 10,188,890 bytes, so at most two windows of 8 MB
+    expect(bytes).toBe(10_188_890);
+    expect(rangeReads).toBeLessThanOrEqual(Math.ceil(bytes / (8 * 1024 * 1024)));
+    expect(textReads).toBe(0);
+    expect(recordCalls).toBe(0);
+    const out = (await blobToString(blob)).split('\n');
+    expect(out.length).toBe(100_001);
+    expect(out[0]).toBe('{"id":0,"pad":"edited","_triage":{"status":"kept","edited":true,"updatedAt":1}}');
+    expect(out[1]).toBe(`{"id":1,"pad":"${pad}","_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}`);
+    expect(out[99_900]).toBe('{"id":99900,"pad":"edited","_triage":{"status":"kept","edited":true,"updatedAt":1}}');
+    expect(out[100_000]).toBe('');
   });
 });
 
@@ -610,7 +770,8 @@ describe('all.decisions.jsonl exclude unparseable (D-022)', () => {
     const lines = readFileSync(join(dir, 'malformed.jsonl'), 'utf-8').split('\n').slice(0, meta.lineCount);
     const bad = (meta.parseable as boolean[]).flatMap((ok, i) => (ok ? [] : [i]));
     expect(bad).toEqual([1]);
-    const source = createMockJsonlSource(lines.map(() => null), bad);
+    // The source serves the fixture's own lines, which the exporter now reads (DR-013)
+    const source = createMockJsonlSourceFromLines(lines, bad);
     const record = async (i: number): Promise<ParsedRecord> =>
       bad.includes(i)
         ? { index: i, ok: false, error: 'Unexpected end', raw: lines[i] }
@@ -656,6 +817,81 @@ describe('all.decisions.jsonl non-object records (D-023)', () => {
         '{"_value":null,"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n' +
         '{"_value":"abc","_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n'
     );
+  });
+
+  it('all.decisions.jsonl writes a bare number under _value with its digits as written (D-096)', async () => {
+    // The line is the bare number, above the safe range: lossless-json parses it to a LosslessNumber
+    const source = createMockJsonlSourceFromLines(['9007199254740993']);
+
+    const result = await buildExport('all.decisions.jsonl', {
+      source,
+      decisions: new Map(),
+      format: { kind: 'unknown' },
+      record: createRecordFn([null]),
+    });
+
+    expect(await blobToString(result.blob)).toBe(
+      '{"_value":9007199254740993,"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}}\n'
+    );
+  });
+});
+
+describe('all.decisions.jsonl keeps unedited records as written (DR-014, D-095)', () => {
+  const TRIAGE = '"_triage":{"status":"unreviewed","edited":false,"updatedAt":0}';
+  const exportOf = async (lines: string[], eols?: number[]) => {
+    const result = await buildExport('all.decisions.jsonl', {
+      source: createMockJsonlSourceFromLines(lines, [], eols),
+      decisions: new Map(),
+      format: { kind: 'unknown' },
+      record: createRecordFn(lines.map(() => null)),
+    });
+    return blobToString(result.blob);
+  };
+
+  it('writes a record with internal whitespace and a duplicate name as written, _triage spliced before its closing brace (DR-014)', async () => {
+    expect(await exportOf(['{ "b" : 1,  "a":2, "a":3 }'])).toBe('{ "b" : 1,  "a":2, "a":3 ,' + TRIAGE + '}\n');
+  });
+
+  it('drops whitespace after the last closing brace (DR-014)', async () => {
+    expect(await exportOf(['{"a":1}   '])).toBe('{"a":1,' + TRIAGE + '}\n');
+  });
+
+  it('writes an empty object with no comma before _triage (DR-014)', async () => {
+    expect(await exportOf(['{}'])).toBe('{' + TRIAGE + '}\n');
+  });
+
+  it('sends a "\\u005ftriage" key through the parse path (DR-014)', async () => {
+    // The escaped name is _triage: parsed, the record's own member is left out and the
+    // export's _triage is appended last (D-097)
+    expect(await exportOf(['{"\\u005ftriage":1,"x":2}'])).toBe('{"x":2,' + TRIAGE + '}\n');
+  });
+
+  it('all.decisions.jsonl appends _triage last when a record already holds one (D-097)', async () => {
+    expect(await exportOf(['{"_triage":"old","a":1}'])).toBe('{"a":1,' + TRIAGE + '}\n');
+  });
+
+  it('sends a line already holding "_triage" through the parse path (DR-014)', async () => {
+    expect(await exportOf(['{"a" : 1,"_triage":"old"}'])).toBe('{"a":1,' + TRIAGE + '}\n');
+  });
+
+  it('keeps CRLF on an edited line of a CRLF file (DR-014 amendment)', async () => {
+    const result = await buildExport('all.decisions.jsonl', {
+      source: createMockJsonlSourceFromLines(['{"a":1}', '{"b":2}'], [], [2, 2]),
+      decisions: new Map<CandidateRef, Decision>([['0', { status: 'unreviewed', edits: { a: 'x' }, updatedAt: 1 }]]),
+      format: { kind: 'unknown' },
+      record: createRecordFn([null, null]),
+    });
+    expect(await blobToString(result.blob)).toBe(
+      '{"a":"x","_triage":{"status":"unreviewed","edited":true,"updatedAt":1}}\r\n{"b":2,' + TRIAGE + '}\r\n'
+    );
+  });
+
+  it('leaves a final unterminated line unterminated after re-serialising (DR-014 amendment)', async () => {
+    expect(await exportOf(['{"a":1}', '[1,2]'], [1, 0])).toBe('{"a":1,' + TRIAGE + '}\n{"_value":[1,2],' + TRIAGE + '}');
+  });
+
+  it('keeps a CRLF line ending on a spliced record (DR-014)', async () => {
+    expect(await exportOf(['{"a":1}', '{"b":2}'], [2, 1])).toBe('{"a":1,' + TRIAGE + '}\r\n{"b":2,' + TRIAGE + '}\n');
   });
 });
 

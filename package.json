@@ -11,10 +11,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:single": "tsc -b && vite build --mode single && node scripts/post-build.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:perf": "playwright test -c playwright.perf.config.ts"
   },
   "dependencies": {
     "class-variance-authority": "0.7.1",
@@ -44,6 +46,7 @@
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
     "vite": "8.3.5",
+    "vite-plugin-singlefile": "2.3.4",
     "vitest": "5.0.5"
   },
   "engines": {

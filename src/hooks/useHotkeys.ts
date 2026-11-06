@@ -60,6 +60,8 @@ export interface HotkeyHandlers {
   groupSize: number;
   isModalOpen: boolean;
   isEditorOpen: boolean;
+  /** E is held until the focused record arrives; Esc cancels it (DR-012) */
+  isEditPending?: boolean;
 }
 
 /**
@@ -98,6 +100,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     groupSize,
     isModalOpen,
     isEditorOpen,
+    isEditPending = false,
   } = handlers;
 
   // Helper to check if hotkey should fire
@@ -292,11 +295,13 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     { enableOnFormTags: false }
   );
 
-  // Edit actions
+  // Edit actions; preventDefault, as for the panel keys below, so the letter does not
+  // type into the textarea the editor focuses as it opens (D-090)
   useHotkeysHook(
     'e',
-    () => {
+    (e) => {
       if (isModalOpen) return;
+      e.preventDefault();
       openEditor();
     },
     { enableOnFormTags: false, useKey: true }
@@ -314,7 +319,10 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
   useHotkeysHook(
     'escape',
     () => {
-      if (isEditorOpen) {
+      // Esc cancels the editor, and dismisses the edit confirmation as its
+      // Dismiss (Esc) button does, keeping the edit (WP 6a i, D-093); it also
+      // cancels an E held for a record still loading (DR-012)
+      if (isEditorOpen || isEditConfirmOpen || isEditPending) {
         cancelEditor();
       }
     },

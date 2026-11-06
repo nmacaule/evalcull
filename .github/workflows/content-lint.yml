@@ -24,6 +24,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
       - name: Fail closed when the lists are not configured
         run: |
           test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
@@ -64,7 +69,11 @@ jobs:
       - name: Pages and Space build outputs (when present)
         if: hashFiles('package.json') != ''
         run: |
-          if npm run --silent build:single 2>/dev/null; then
+          # Only a package that defines build:single has these outputs; when it does,
+          # a failed install or build fails the check instead of skipping the scan (D-089)
+          if node -e "process.exit(require('./package.json').scripts?.['build:single'] ? 0 : 1)"; then
+            npm ci
+            npm run build:single
             find dist -type f -print0 | xargs -0 scripts/content-lint files
           fi
 

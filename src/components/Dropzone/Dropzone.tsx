@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { loadJsonlFile } from '../../readers/loadJsonlFile';
+import { SAMPLES, sampleFile } from '../../lib/samples';
 import { useReviewStore } from '../../store/useReviewStore';
 
 export interface DropzoneProps {
@@ -185,6 +186,20 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
         }}
         disabled={isLoading}
       />
+      {/* The embedded samples open through the same checks as a drop (DR-010) */}
+      <div className="flex flex-wrap justify-center gap-2">
+        {SAMPLES.map((sample) => (
+          <Button
+            key={sample.name}
+            variant="ghost"
+            size="sm"
+            disabled={isLoading}
+            onClick={() => accept([sampleFile(sample)])}
+          >
+            Open sample: {sample.label}
+          </Button>
+        ))}
+      </div>
       {message && <p className="text-sm text-destructive">{message}</p>}
     </div>
   );

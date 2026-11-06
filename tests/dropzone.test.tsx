@@ -5,6 +5,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Dropzone } from '../src/components/Dropzone';
 
 const loadJsonlFile = vi.fn();
@@ -88,5 +90,27 @@ describe('Dropzone', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(loadJsonlFile).toHaveBeenCalledTimes(1));
     expect(loadJsonlFile.mock.calls[0][0]).toBe(b);
+  });
+
+  it('Open sample: candidates loads candidates.jsonl (DR-010)', async () => {
+    render(<Dropzone loaded={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open sample: candidates' }));
+    await waitFor(() => expect(loadJsonlFile).toHaveBeenCalledTimes(1));
+    const opened = loadJsonlFile.mock.calls[0][0] as File;
+    expect(opened.name).toBe('candidates.jsonl');
+    // 15 Nov 2026 00:00 UTC, fixed so the fingerprint restores a session across visits
+    expect(opened.lastModified).toBe(1794700800000);
+    const expected = readFileSync(join(import.meta.dirname, '..', 'samples', 'candidates.jsonl'), 'utf8');
+    expect(await opened.text()).toBe(expected);
+  });
+
+  it('offers the three samples on the empty page only (DR-010)', () => {
+    const { unmount } = render(<Dropzone loaded={false} />);
+    for (const label of ['conversation', 'preference', 'candidates']) {
+      expect(screen.getByRole('button', { name: `Open sample: ${label}` })).toBeInTheDocument();
+    }
+    unmount();
+    render(<Dropzone loaded />);
+    expect(screen.queryByRole('button', { name: /Open sample/ })).toBeNull();
   });
 });

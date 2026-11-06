@@ -16,6 +16,7 @@ import type { RecordSource, CandidateRef, Decision } from '../types';
 import { groupByLine, lineDecision } from '../store/refs';
 import { losslessParse, losslessStringify } from '../lib/lossless';
 import { parsePath, setByPath } from '../lib/path';
+import { readWindows } from './windows';
 
 const YIELD_INTERVAL = 5000;
 
@@ -47,53 +48,52 @@ export async function exportLines(
   // Build index for O(1) lineDecision lookup
   const byLineIndex = groupByLine(decisions);
 
-  // Unedited included lines are copied one run at a time: one slice per run,
-  // not one Blob part per line (D-006)
-  let runStart = -1;
-  const flushRun = async (last: number) => {
-    if (runStart === -1) return;
-    const raw = await src.readRawRange(runStart, last);
-    // A run from line 0 with BOM: slice past BOM since we handle it at file level
-    parts.push(runStart === 0 && idx.hasBom ? raw.slice(3) : raw);
-    runStart = -1;
-  };
-
-  for (let i = 0; i < idx.lineCount; i++) {
-    const d = lineDecision(decisions, byLineIndex, i);
-
-    if (!include(i, d)) {
-      await flushRun(i - 1);
-      continue;
-    }
-
-    if (d?.edits && Object.keys(d.edits).length) {
-      await flushRun(i - 1);
-      // Edited line: parse with lossless-json, apply edits, re-serialise
-      const text = await src.readText(i);
-      let obj = losslessParse(text);
-
-      for (const [path, value] of Object.entries(d.edits)) {
-        const segments = parsePath(path);
-        obj = setByPath(obj, segments, value);
+  // The source is read in windows (readWindows, DR-013); unedited included lines are
+  // copied byte for byte out of the window, never parsed, and each window's output
+  // is one part (D-094)
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+  const encoder = new TextEncoder();
+  for await (const win of readWindows(src)) {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (let i = win.first; i <= win.last; i++) {
+      const d = lineDecision(decisions, byLineIndex, i);
+      if (include(i, d)) {
+        let out: Uint8Array;
+        if (d?.edits && Object.keys(d.edits).length) {
+          // Edited line: parse with lossless-json, apply edits, re-serialise
+          let obj = losslessParse(decoder.decode(win.line(i)));
+          for (const [path, value] of Object.entries(d.edits)) {
+            const segments = parsePath(path);
+            obj = setByPath(obj, segments, value);
+          }
+          const eol = idx.eols[i] === 2 ? '\r\n' : idx.eols[i] === 1 ? '\n' : '';
+          out = encoder.encode(losslessStringify(obj) + eol);
+        } else {
+          // Unedited line: its raw bytes, terminator included
+          out = win.lineWithEol(i);
+        }
+        chunks.push(out);
+        size += out.length;
       }
 
-      const eol = idx.eols[i] === 2 ? '\r\n' : idx.eols[i] === 1 ? '\n' : '';
-      parts.push(losslessStringify(obj) + eol);
-    } else if (runStart === -1) {
-      // Unedited line: starts a run of raw bytes including terminators
-      runStart = i;
-    }
-
-    // Yield to allow page paint, as the other exporters do (D-008)
-    if (i % YIELD_INTERVAL === 0) {
-      await new Promise((r) => setTimeout(r, 0));
-      if (onProgress) {
-        onProgress(i, idx.lineCount);
+      // Yield to allow page paint, as the other exporters do (D-008)
+      if (i % YIELD_INTERVAL === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+        if (onProgress) {
+          onProgress(i, idx.lineCount);
+        }
       }
     }
+
+    const part = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) {
+      part.set(chunk, at);
+      at += chunk.length;
+    }
+    if (size > 0) parts.push(part);
   }
-
-  await flushRun(idx.lineCount - 1);
 
   if (onProgress) {
     onProgress(idx.lineCount, idx.lineCount);

@@ -487,6 +487,22 @@ describe('App edit flow (WP 6b)', () => {
     expect(useReviewStore.getState().decisions.get('0')?.edits).toEqual({ output: 'crimson' });
   });
 
+  it('Esc dismisses the edit confirmation like its Dismiss button, keeping the edit (D-093)', async () => {
+    await loadSource(makeSource(['{"instruction":"q","output":"red"}'], [0], [1]), FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+
+    press('e', 'KeyE');
+    fireEvent.change(editor(), { target: { value: 'crimson' } });
+    press('Enter', 'Enter', { metaKey: true }, editor());
+    await waitFor(() => expect(screen.getByText('Confirm Edit')).toBeInTheDocument());
+    press('Escape', 'Escape');
+
+    await waitFor(() => expect(screen.queryByText('Confirm Edit')).toBeNull());
+    expect(card(container, '0').textContent).toContain('crimson');
+    expect(useReviewStore.getState().decisions.get('0')?.edits).toEqual({ output: 'crimson' });
+  });
+
   it('a file dropped while the editor is open does not reach the browser (D-033)', async () => {
     await loadSource(makeSource(['{"instruction":"q","output":"red"}'], [0], [1]), FLAT_IO);
     const { container } = render(<App />);
@@ -504,5 +520,53 @@ describe('App edit flow (WP 6b)', () => {
     expect(editor()).toBeInTheDocument();
     expect(screen.getByText('Save or cancel the edit first.')).toBeInTheDocument();
     expect(screen.queryByText('Open b.jsonl? Changes to the current file are saved first.')).toBeNull();
+  });
+
+  describe('E before the record has loaded (D-092, DR-012)', () => {
+    // A two-line flat file whose line 1 is read only when the test releases it
+    async function heldSecondLine() {
+      const source = makeSource(['{"instruction":"p0","output":"red"}', '{"instruction":"p1","output":"blue"}'], [0, 1], [1, 1]);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const read = source.readText;
+      source.readText = async (i: number) => {
+        if (i === 1) await gate;
+        return read(i);
+      };
+      await loadSource(source, FLAT_IO);
+      const { container } = render(<App />);
+      await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+      press('j', 'KeyJ');
+      await waitFor(() => expect(screen.getByText('Record 2 of 2')).toBeInTheDocument());
+      expect(container.querySelector('[data-candidate-ref="1"]')).toBeNull();
+      return { container, release };
+    }
+
+    it('E pressed before the record has loaded opens the editor when it arrives (D-092)', async () => {
+      const { release } = await heldSecondLine();
+      press('e', 'KeyE');
+      expect(screen.queryByLabelText('Edit content')).toBeNull();
+      await act(async () => release());
+      await waitFor(() => expect(editor().value).toBe('blue'));
+    });
+
+    it('a cursor move cancels a pending E (D-092)', async () => {
+      const { container, release } = await heldSecondLine();
+      press('e', 'KeyE');
+      press('k', 'KeyK');
+      await waitFor(() => expect(screen.getByText('Record 1 of 2')).toBeInTheDocument());
+      await act(async () => release());
+      await waitFor(() => expect(card(container, '0').textContent).toContain('red'));
+      expect(screen.queryByLabelText('Edit content')).toBeNull();
+    });
+
+    it('Esc cancels a pending E (D-092)', async () => {
+      const { container, release } = await heldSecondLine();
+      press('e', 'KeyE');
+      press('Escape', 'Escape');
+      await act(async () => release());
+      await waitFor(() => expect(card(container, '1').textContent).toContain('blue'));
+      expect(screen.queryByLabelText('Edit content')).toBeNull();
+    });
   });
 });
