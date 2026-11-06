@@ -170,6 +170,10 @@ function App() {
     previous: { value: unknown } | null;
   } | null>(null);
 
+  // E pressed before the focused card's record has loaded: one pending intent for
+  // this file, line and card, fulfilled when that record arrives (DR-012, D-092)
+  const [pendingEdit, setPendingEdit] = useState<{ fingerprint: string; cursor: number; focus: number } | null>(null);
+
   // Error state (surfaced in header, cleared on next success)
   const [lastError, setLastError] = useState<string | null>(null);
 
@@ -303,11 +307,11 @@ function App() {
     if (!schemaMapperOpen) setMapperDraft(false);
   }, [schemaMapperOpen]);
 
-  // Default to raw view for unknown format
+  // Each format kind opens in its default view: raw for unknown only (WP 6a d). The
+  // store starts with unknown before any file is open, so the default must also be
+  // cleared when a file of a known format arrives (D-091)
   useEffect(() => {
-    if (format.kind === 'unknown') {
-      setShowRaw(true);
-    }
+    setShowRaw(format.kind === 'unknown');
   }, [format.kind]);
 
   // Get edits for current refs
@@ -358,11 +362,15 @@ function App() {
 
   // Open editor for focused candidate, at the path its ref names
   const openEditor = useCallback(() => {
-    if (!leftRecord || (leftRecord && !leftRecord.ok)) return;
+    const currentRecord = focus === 0 || singleCard ? leftRecord : rightRecord;
+    // Not read yet: the key is held, never dropped (DR-012, D-092)
+    if (!leftRecord || !currentRecord) {
+      setPendingEdit({ fingerprint, cursor, focus });
+      return;
+    }
+    if (!leftRecord.ok || !currentRecord.ok) return;
 
     const ref = getFocusedRef();
-    const currentRecord = focus === 0 || singleCard ? leftRecord : rightRecord;
-    if (!currentRecord || !currentRecord.ok) return;
 
     const path = editPathFor(ref, format, currentRecord.data);
     if (path === null) {
@@ -370,7 +378,7 @@ function App() {
       return;
     }
     beginEdit(ref, path, currentRecord.data);
-  }, [leftRecord, rightRecord, focus, singleCard, format, getFocusedRef, beginEdit]);
+  }, [leftRecord, rightRecord, focus, singleCard, format, getFocusedRef, beginEdit, fingerprint, cursor]);
 
   // Save editor
   const saveEditor = useCallback(() => {
@@ -383,7 +391,30 @@ function App() {
     setEditing(null);
     setEditConfirm(null);
     setEditError(null);
+    setPendingEdit(null);
   }, []);
+
+  // A pending E is fulfilled once its card's record arrives for the same file, line
+  // and card; a cursor move, Tab or a file switch cancels it (DR-012, D-092)
+  const modalOpen =
+    schemaMapperOpen || cheatSheetOpen || labelNotes !== null || goToOpen || exportOpen || dropConfirmOpen || fileOpening;
+  useEffect(() => {
+    if (!pendingEdit) return;
+    if (pendingEdit.fingerprint !== fingerprint || pendingEdit.cursor !== cursor || pendingEdit.focus !== focus || modalOpen) {
+      setPendingEdit(null);
+      return;
+    }
+    const currentRecord = focus === 0 || singleCard ? leftRecord : rightRecord;
+    if (leftRecord && currentRecord) {
+      setPendingEdit(null);
+      openEditor();
+    }
+  }, [pendingEdit, fingerprint, cursor, focus, modalOpen, singleCard, leftRecord, rightRecord, openEditor]);
+
+  // A decision key cancels it too (DR-012)
+  useEffect(() => {
+    setPendingEdit(null);
+  }, [decisions]);
 
   // Handle editor save
   const handleEditorSave = useCallback(
@@ -559,6 +590,7 @@ function App() {
       dropConfirmOpen ||
       fileOpening,
     isEditorOpen: editing !== null,
+    isEditPending: pendingEdit !== null,
   });
 
   // No source loaded - the drop target and Open file button

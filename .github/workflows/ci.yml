@@ -33,6 +33,10 @@ jobs:
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
 
+      - name: Single-file build (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run build:single
+
       - name: E2E tests (Linux only)
         if: runner.os == 'Linux'
         run: npm run e2e

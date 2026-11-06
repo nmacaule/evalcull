@@ -1,0 +1,116 @@
+name: pages
+
+# The Phase 0 demo (PRD §4 Phase 0, §3.9): one single-file build, scanned by
+# content-lint, deployed to GitHub Pages and pushed to the Space evalcull/demo
+# from the same run. Actions are pinned to full commit SHAs.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CONTENT_LINT_TERMS: ${{ secrets.CONTENT_LINT_TERMS }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Single-file build
+        run: npm run build:single
+
+      - name: content-lint the build output
+        run: |
+          test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
+          chmod +x scripts/content-lint
+          find dist -type f -print0 | xargs -0 scripts/content-lint files
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  space:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CONTENT_LINT_TERMS: ${{ secrets.CONTENT_LINT_TERMS }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_USERNAME: ${{ vars.HF_USERNAME }}
+      SPACE_COMMIT_EMAIL: ${{ vars.SPACE_COMMIT_EMAIL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same build the Pages job deployed
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: github-pages
+          path: artifact
+
+      - name: Unpack the build
+        run: mkdir site && tar -xf artifact/artifact.tar -C site
+
+      - name: Write and content-lint the Space card
+        run: |
+          test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
+          chmod +x scripts/content-lint
+          cat > site/README.md <<'CARD'
+          ---
+          title: evalcull
+          sdk: static
+          app_file: index.html
+          license: apache-2.0
+          pinned: false
+          ---
+
+          Review eval and fine-tuning JSONL files from the keyboard, in your browser.
+          Nothing is uploaded: the page makes no network requests. Source and licence:
+          https://github.com/nmacaule/evalcull
+          CARD
+          scripts/content-lint stdin < site/README.md
+          find site -type f -print0 | xargs -0 scripts/content-lint files
+
+      - name: Push to the Space
+        run: |
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN secret is not set"; exit 1; }
+          test -n "$HF_USERNAME" || { echo "HF_USERNAME variable is not set"; exit 1; }
+          test -n "$SPACE_COMMIT_EMAIL" || { echo "SPACE_COMMIT_EMAIL variable is not set"; exit 1; }
+          git clone "https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/evalcull/demo" space
+          find space -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R site/. space/
+          cd space
+          git config user.name "$HF_USERNAME"
+          git config user.email "$SPACE_COMMIT_EMAIL"
+          git add -A
+          if git diff --cached --quiet; then echo "Space already up to date"; exit 0; fi
+          git commit -m "Deploy ${GITHUB_SHA::7}"
+          git push origin HEAD:main

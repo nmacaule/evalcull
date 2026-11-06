@@ -1,0 +1,6 @@
+{"prompt":"Summarise why sleep matters in one sentence.","chosen":"Sleep lets the body repair itself and the brain consolidate memory, so you think and feel better the next day.","rejected":"Sleep is when you are not awake."}
+{"prompt":"Write a polite reminder that an invoice is overdue.","chosen":"Hello, a quick reminder that invoice 1042 was due on 1 November. Could you let me know when payment is planned? Thank you.","rejected":"You still have not paid. Pay now."}
+{"prompt":"What is 15% of 80?","chosen":"12.","rejected":"15% of 80 is 10."}
+{"prompt":"Name three fruits that are high in vitamin C.","chosen":"Oranges, kiwis and strawberries.","rejected":"Bananas, apples and grapes are the best sources."}
+{"prompt":"How do I keep basil fresh for longer?","chosen":"Trim the stems and stand them in a glass of water at room temperature, loosely covered with a bag.","rejected":"Put it in the freezer uncovered."}
+{"prompt":"Suggest a title for a talk about saving energy at home.","chosen":"Small Switches, Big Savings: Cutting Energy Use at Home","rejected":"Energy"}

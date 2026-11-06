@@ -315,6 +315,17 @@ describe('hotkeys', () => {
         expect(openEditor).toHaveBeenCalled();
       });
 
+      it("E prevents the key's default action, so the letter does not type into the editor (D-090)", () => {
+        const openEditor = vi.fn();
+        render(<TestHarness mode="single" handlers={{ openEditor }} />);
+
+        // fireEvent returns false when a handler called preventDefault; the editor
+        // focuses its textarea inside this keydown, so a default action would type e there
+        const notPrevented = fireEvent.keyDown(document.body, { key: 'e', code: 'KeyE' });
+        expect(openEditor).toHaveBeenCalled();
+        expect(notPrevented).toBe(false);
+      });
+
       it('Mod+Enter fires saveEditor() when editor is open', () => {
         const saveEditor = vi.fn();
         render(<TestHarness mode="single" isEditorOpen={true} handlers={{ saveEditor }} />);

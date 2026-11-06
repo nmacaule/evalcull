@@ -29,17 +29,18 @@ function DialogClose({
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
+// A plain backdrop, not DialogPrimitive.Overlay: Radix's overlay wraps itself in a
+// scroll lock that inserts a <style> element on every open, which the single file's
+// hashed style-src blocks (PRD §3.9, DR-008). The content keeps its focus trap and
+// hides the rest of the page; the page behind an open dialog is not scroll-locked.
 function DialogOverlay({
   className,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+}: React.ComponentProps<"div">) {
   return (
-    <DialogPrimitive.Overlay
+    <div
       data-slot="dialog-overlay"
-      className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
-        className
-      )}
+      className={cn("fixed inset-0 z-50 bg-black/50 animate-in fade-in-0", className)}
       {...props}
     />
   )
