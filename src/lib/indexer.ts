@@ -1,7 +1,7 @@
 /**
  * JSONL indexer: streaming 0x0A scan per §3.4.
  *
- * Testable outside a worker. The worker re-exports this with message handling.
+ * Testable outside a worker. The worker runs it on the chunks the page sends.
  */
 
 import {
@@ -23,36 +23,33 @@ export interface IndexProgress {
 }
 
 /**
- * Index a blob, streaming through its bytes.
+ * Index a file's bytes, chunk by chunk, in order (v3.5: the page reads them
+ * and the worker scans them, DR-025).
  *
- * @param blob The blob to index
+ * @param chunks The file's bytes in order
+ * @param total The file's size in bytes, for progress
  * @param onProgress Optional callback for progress updates
  */
-export async function indexBlob(
-  blob: Blob,
+export async function indexChunks(
+  chunks: AsyncIterable<Uint8Array>,
+  total: number,
   onProgress?: (progress: IndexProgress) => void
 ): Promise<IndexResult> {
   const starts = new GrowableFloat64Array();
   const ends = new GrowableFloat64Array();
   const eols = new GrowableUint8Array();
 
-  // Detect BOM from the first 3 bytes before scanning.
-  // This avoids fragility if the first chunk is < 3 bytes.
-  let hasBom = false;
-  if (blob.size >= 3) {
-    const first3 = new Uint8Array(await blob.slice(0, 3).arrayBuffer());
-    hasBom = first3[0] === 0xef && first3[1] === 0xbb && first3[2] === 0xbf;
-  }
+  // The first 3 bytes, gathered across chunks, so a first chunk shorter than
+  // 3 bytes still detects the BOM
+  const head = new Uint8Array(3);
+  let headLength = 0;
 
   let pos = 0;
   let lineStart = 0;
   let prevCR = false;
 
-  const reader = blob.stream().getReader();
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
+  for await (const value of chunks) {
+    for (let i = 0; i < value.length && headLength < 3; i++) head[headLength++] = value[i];
 
     for (let i = 0; i < value.length; i++) {
       const b = value[i];
@@ -69,9 +66,11 @@ export async function indexBlob(
     pos += value.length;
 
     if (onProgress) {
-      onProgress({ bytes: pos, total: blob.size });
+      onProgress({ bytes: pos, total });
     }
   }
+
+  const hasBom = headLength === 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf;
 
   // Last line without trailing newline
   if (lineStart < pos) {

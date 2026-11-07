@@ -5,7 +5,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { indexBlob } from '../src/lib/indexer';
+import { indexChunks } from '../src/lib/indexer';
+import { readChunks } from '../src/lib/chunks';
 import { secondPass } from '../src/lib/secondPass';
 import { exportLines } from '../src/export/exportLines';
 import { losslessParse } from '../src/lib/lossless';
@@ -133,7 +134,7 @@ describe('index triples (WP 2: indexer worker)', () => {
 
     // Run indexer (use Node's Blob which has .stream())
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     // Assert line count
     expect(result.lineCount).toBe(expected.lineCount);
@@ -152,6 +153,27 @@ describe('index triples (WP 2: indexer worker)', () => {
     expect(Array.from(result.eols)).toEqual(meta.eols);
   });
 
+  // WP 7c (DR-025): the page's reads can split a BOM, a CR LF or a line anywhere
+  it.each([1, 2, 3].flatMap((size) => ['bom', 'crlf', 'mixed'].map((name) => [name, size] as const)))(
+    '%s read in %i-byte chunks: index matches Buffer.indexOf oracle',
+    async (name, size) => {
+      const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
+      const meta: FixtureMeta = JSON.parse(readFileSync(join(fixturesDir, `${name}.meta.json`), 'utf-8'));
+      const expected = oracle(bytes);
+      const blob = createBlob(bytes);
+
+      const result = await indexChunks(readChunks(blob, size), blob.size);
+
+      expect({
+        lineCount: result.lineCount,
+        hasBom: result.hasBom,
+        starts: Array.from(result.starts),
+        ends: Array.from(result.ends),
+        eols: Array.from(result.eols),
+      }).toEqual({ ...expected, lineCount: meta.lineCount, hasBom: meta.hasBom });
+    }
+  );
+
   it.each(fixtures)('%s: every parseable line parses', async (name) => {
     const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
     const meta: FixtureMeta = JSON.parse(
@@ -159,7 +181,7 @@ describe('index triples (WP 2: indexer worker)', () => {
     );
 
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     // Use TextDecoder with ignoreBOM: false (default) to match readText behavior.
     // This strips the BOM from line 0 in BOM files, making JSON.parse work.
@@ -188,8 +210,8 @@ describe('index triples (WP 2: indexer worker)', () => {
     const blobWithBom = createBlob(withBom);
     const blobWithoutBom = createBlob(withoutBom);
 
-    const resultWithBom = await indexBlob(blobWithBom);
-    const resultWithoutBom = await indexBlob(blobWithoutBom);
+    const resultWithBom = await indexChunks(readChunks(blobWithBom), blobWithBom.size);
+    const resultWithoutBom = await indexChunks(readChunks(blobWithoutBom), blobWithoutBom.size);
 
     expect(resultWithBom.hasBom).toBe(true);
     expect(resultWithoutBom.hasBom).toBe(false);
@@ -208,7 +230,7 @@ describe('index triples (WP 2: indexer worker)', () => {
 
   it('handles empty blob', async () => {
     const blob = createBlob(new Uint8Array(0));
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     expect(result.lineCount).toBe(0);
     expect(result.hasBom).toBe(false);
@@ -219,7 +241,7 @@ describe('index triples (WP 2: indexer worker)', () => {
 
   it('handles blob smaller than 3 bytes without BOM', async () => {
     const blob = createBlob(new Uint8Array([0x0a])); // just a newline
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     expect(result.hasBom).toBe(false);
     expect(result.lineCount).toBe(1);
@@ -233,7 +255,7 @@ describe('index triples (WP 2: indexer worker)', () => {
     // For now, each line is its own group: groups[i] = i, groupCount = lineCount.
     const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     // Stub grouping: each line is its own group
     const groups = new Uint32Array(result.lineCount);
@@ -254,7 +276,7 @@ describe('SHA-256 round-trip (WP 4: exporter)', () => {
   it.each(fixtures)('%s: export with no decisions is SHA-256 identical', async (name) => {
     const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     // Create FileIndex with empty unparseable (we're testing export, not unparseable detection)
     const idx: FileIndex = {
@@ -295,7 +317,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
   it('edit one line: only that line differs', async () => {
     const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -345,7 +367,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
     // Test with number-formats.jsonl which has 1.0, 1e3, -0
     const bytes = readFileSync(join(fixturesDir, 'number-formats.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -383,7 +405,7 @@ describe('edited line isolation (WP 4: exporter)', () => {
   it('big integer 9007199254740993 is preserved on edited lines', async () => {
     const bytes = readFileSync(join(fixturesDir, 'big-int.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -422,7 +444,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('keep: BOM file exports identical', async () => {
     const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -449,7 +471,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('strip: BOM file exports without BOM', async () => {
     const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -480,7 +502,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('add: non-BOM file exports with BOM prepended', async () => {
     const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -513,7 +535,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('edited line 0 with BOM: keep preserves BOM', async () => {
     const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -550,7 +572,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('edited line 0 with BOM: strip removes BOM', async () => {
     const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -585,7 +607,7 @@ describe('BOM options (WP 4: exporter)', () => {
   it('edited line 0 with BOM: add emits exactly one BOM', async () => {
     const bytes = readFileSync(join(fixturesDir, 'bom.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',
@@ -664,7 +686,7 @@ describe('edit then undo exports byte-identical (WP 4)', () => {
   it('edit and undo produces same export as no edit', async () => {
     const bytes = readFileSync(join(fixturesDir, 'lf.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test-fingerprint',
@@ -734,9 +756,9 @@ describe('unparseable detection (WP 4, updated WP 5)', () => {
 
     // Run secondPass from src/lib (merged unparseable + grouping, WP 5)
     const blob = createBlob(bytes);
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
     const passResult = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -750,7 +772,7 @@ describe('unparseable detection (WP 4, updated WP 5)', () => {
     for (const name of fixtures) {
       const bytes = readFileSync(join(fixturesDir, `${name}.jsonl`));
       const blob = createBlob(bytes);
-      const result = await indexBlob(blob);
+      const result = await indexChunks(readChunks(blob), blob.size);
       const decoder = new TextDecoder('utf-8');
 
       for (let i = 0; i < result.lineCount; i++) {
@@ -790,7 +812,7 @@ describe('excludeUnparseable (WP 4)', () => {
   it('malformed.jsonl: exclude removes unparseable line', async () => {
     const bytes = readFileSync(join(fixturesDir, 'malformed.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     // Line 1 is unparseable per meta
     const idx: FileIndex = {
@@ -827,7 +849,7 @@ describe('excludeUnparseable (WP 4)', () => {
   it('malformed.jsonl: include passes through unparseable line byte-exact', async () => {
     const bytes = readFileSync(join(fixturesDir, 'malformed.jsonl'));
     const blob = createBlob(bytes);
-    const result = await indexBlob(blob);
+    const result = await indexChunks(readChunks(blob), blob.size);
 
     const idx: FileIndex = {
       fingerprint: 'test',

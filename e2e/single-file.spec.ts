@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { DIST_URL, downloadExport, dropFile, watchCsp, writeTmp } from './helpers'
+import { DIST_URL, downloadExport, dropFile, watchCsp, watchCspExceptWebKitSelect, writeTmp } from './helpers'
 
 // WP 7 (plan.md WP 7 gate; PRD §3.9, §5 CSP, Privacy, TTFV): the single file
 // opened from file://. LIVE_URL runs the CSP, privacy and TTFV tests against
@@ -23,8 +23,11 @@ test('carries the meta policy', async ({ page }) => {
   expect(policy).toMatch(POLICY)
 })
 
-test('zero CSP violations through the whole loop', async ({ page }) => {
-  const violations = await watchCsp(page)
+// DR-026 (owner, 7 Nov 2026): WebKit's report from its own native select is the one
+// report ignored; every other report in every engine fails the test
+test('zero CSP violations through the whole loop', async ({ page, browserName }) => {
+  const watched = await watchCspExceptWebKitSelect(page, browserName)
+  const violations = async () => (await watched()).violations
   await page.goto(URL)
   await page.getByRole('button', { name: 'Open sample: candidates' }).click()
   await expect(page.getByText('Pair 1 of 3')).toBeVisible()
@@ -59,6 +62,48 @@ test('zero CSP violations through the whole loop', async ({ page }) => {
   await expect(page.getByRole('dialog')).toHaveCount(0)
 
   expect(await violations()).toEqual([])
+})
+
+// DR-026: the ignore fires only in WebKit, and an author style attribute on a select
+// is still reported in Chromium and Firefox. In WebKit the select's own report and an
+// author attribute on a select look alike (style-src-attr, a select, no sample), so
+// both are ignored there: the risk DR-026 records
+test('DR-026: the WebKit select ignore is WebKit only; an author style on a select still fails elsewhere', async ({ page, browserName }) => {
+  const watched = await watchCspExceptWebKitSelect(page, browserName)
+  await page.goto(URL)
+  await page.evaluate(() => {
+    const select = document.createElement('select')
+    select.setAttribute('style', 'color: rgb(255, 0, 0)')
+    document.body.appendChild(select)
+  })
+  // WebKit: one report for the select it creates, one for the author attribute
+  const expected = browserName === 'webkit' ? { styleAttrReported: false, ignored: 2 } : { styleAttrReported: true, ignored: 0 }
+  await expect
+    .poll(async () => {
+      const { violations, ignored } = await watched()
+      return { styleAttrReported: violations.includes('style-src-attr inline'), ignored }
+    })
+    .toEqual(expected)
+})
+
+// D-105 (WP 7c): served over http, Firefox asks for /favicon.ico, which img-src data: blocks;
+// the page declares its own icon. vite preview serves the build:single output in dist
+test('D-105: no CSP violation from the browser icon request over http', async ({ page }) => {
+  const violations = await watchCsp(page)
+  await page.goto(process.env.LIVE_URL ?? '/')
+  await page.waitForLoadState('networkidle')
+  expect(await violations()).toEqual([])
+})
+
+// PRD §5 Persistence (WP 7c): the storage indicator's word after one decision. Observed
+// 7 Nov 2026 from file:// in Playwright Chromium, WebKit 27.2 and Firefox 157.0: "Saved" in each
+test('Persistence: a decision is saved, and the indicator says so', async ({ page }) => {
+  const DISTINCT = ['{"instruction":"p0","output":"a"}', '{"instruction":"p1","output":"b"}'].join('\n') + '\n'
+  await page.goto(URL)
+  await page.getByLabel('JSONL file').setInputFiles({ name: 'persist.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(DISTINCT) })
+  await expect(page.getByRole('status').filter({ hasText: 'No unsaved changes' })).toBeVisible()
+  await page.keyboard.press('a')
+  await expect(page.getByRole('status').filter({ hasText: /^Saved$/ })).toBeVisible()
 })
 
 test('makes no request outside the file', async ({ page }) => {
@@ -101,6 +146,37 @@ test.describe('the shipped file', () => {
     await expect(cand.getByText('Prompt 1 of 2')).toBeVisible()
     await expect(cand.getByText('Pair 1 of 3')).toBeVisible()
     await cand.close()
+  })
+
+  // D-100 (WP 7c): Safari never indexed the file from file://. The sample is an
+  // in-memory File; the second page opens a file from disk, the read the console's
+  // "I/O read operation failed" names
+  test('D-100: the single file from file:// indexes', async ({ browser }) => {
+    const messages: string[] = []
+    const collect = (page: Page) => {
+      page.on('console', (m) => messages.push(`console ${m.type()}: ${m.text()}`))
+      page.on('pageerror', (e) => messages.push(`pageerror: ${e.message}`))
+      page.on('worker', (w) => messages.push(`worker: ${w.url()}`))
+    }
+
+    const sample = await browser.newPage()
+    collect(sample)
+    await sample.goto(DIST_URL)
+    await sample.getByRole('button', { name: 'Open sample: candidates' }).click()
+    const sampleOpened = sample.getByText('Pair 1 of 3').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+
+    const disk = await browser.newPage()
+    collect(disk)
+    await disk.goto(DIST_URL)
+    await disk.getByLabel('JSONL file').setInputFiles(writeTmp('d100.jsonl', CANDIDATES))
+    const diskOpened = disk.getByText('Pair 1 of 3').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+
+    const opened = { sample: await sampleOpened, disk: await diskOpened }
+    process.stdout.write(`D-100 collected (${test.info().project.name}):\n${messages.join('\n')}\n`)
+    expect({ opened, errors: messages.filter((m) => /NotReadableError|Cannot load blob:/.test(m)) }).toEqual({
+      opened: { sample: true, disk: true },
+      errors: [],
+    })
   })
 
   test('a drop opens the file', async ({ page }) => {

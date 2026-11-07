@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test'
 import { DIST_URL, downloadExport } from './helpers'
 
+// WP 7c: LIVE_URL runs this spec against the deployed page instead of the file from disk
+const URL = process.env.LIVE_URL ?? DIST_URL
+
 // WP 7 gate (a): kept.jsonl through the real reader's readRawRange is byte-exact
 // (D-006), with a BOM file kept and stripped and a run of unedited lines that
 // starts at line 0. Distinct prompts, so single mode; a, a, r auto-advance (WP 3 d).
@@ -10,7 +13,7 @@ const LINES =
 const KEPT = '{"instruction":"p0","output":"a"}\r\n{"instruction":"p1","output":"b"}\n'
 
 test.beforeEach(async ({ page }) => {
-  await page.goto(DIST_URL)
+  await page.goto(URL)
   await page.getByLabel('JSONL file').setInputFiles({
     name: 'bom.jsonl',
     mimeType: 'application/jsonl',

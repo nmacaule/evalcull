@@ -1,7 +1,7 @@
 /**
- * Second pass over JSONL blob: unparseable detection + grouping in one read.
+ * Second pass over a JSONL file's bytes: unparseable detection + grouping in one read.
  *
- * Streams blob in chunks, decodes and JSON.parse each line once.
+ * Takes the bytes in chunks, decodes and JSON.parse each line once.
  * Extracts grouping key per format and assigns group IDs.
  * Records unparseable line indices.
  * WP 6c: records each line's candidate count for the format.
@@ -46,14 +46,14 @@ function candidateCounter(format: RecordFormat): (parsed: unknown) => number {
 /**
  * Single streaming pass for unparseable detection and grouping.
  *
- * @param blob JSONL blob
+ * @param chunks The file's bytes in order (v3.5: read by the page, DR-025)
  * @param starts Line start offsets
  * @param ends Line end offsets (before line ending)
- * @param hasBom Whether blob starts with UTF-8 BOM
+ * @param hasBom Whether the file starts with a UTF-8 BOM
  * @param format Record format for grouping key extraction
  */
 export async function secondPass(
-  blob: Blob,
+  chunks: AsyncIterable<Uint8Array>,
   starts: Float64Array,
   ends: Float64Array,
   hasBom: boolean,
@@ -78,8 +78,7 @@ export async function secondPass(
   // ignoreBOM: true so decoder does NOT auto-strip; we skip bytes explicitly for line 0
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
-  // Stream the blob in chunks, tracking position
-  const reader = blob.stream().getReader();
+  // Take the bytes chunk by chunk, tracking position
   let buffer = new Uint8Array(0);
   let bufferStart = 0; // absolute position of buffer[0] in the file
   let lineIdx = 0;
@@ -89,16 +88,12 @@ export async function secondPass(
     format.kind !== 'unknown' &&
     !(format.kind === 'preference' && !format.promptPath);
 
-  for (;;) {
-    const { value, done } = await reader.read();
-
-    if (value) {
-      // Append chunk to buffer
-      const newBuffer = new Uint8Array(buffer.length + value.length);
-      newBuffer.set(buffer);
-      newBuffer.set(value, buffer.length);
-      buffer = newBuffer;
-    }
+  for await (const value of chunks) {
+    // Append chunk to buffer
+    const newBuffer = new Uint8Array(buffer.length + value.length);
+    newBuffer.set(buffer);
+    newBuffer.set(value, buffer.length);
+    buffer = newBuffer;
 
     // Process all complete lines we can from the buffer
     while (lineIdx < lineCount) {
@@ -166,8 +161,6 @@ export async function secondPass(
         bufferStart = lastProcessedEnd;
       }
     }
-
-    if (done) break;
   }
 
   return {

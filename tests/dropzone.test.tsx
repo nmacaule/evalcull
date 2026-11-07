@@ -77,6 +77,17 @@ describe('Dropzone', () => {
     await waitFor(() => expect(screen.getByText('Worker failed')).toBeInTheDocument());
   });
 
+  // WP 7c (D-103 symptom): a rejected read reaches the alert and releases the opening
+  // hold, so the next open goes through; the hang D-103 names is upstream of this
+  it('a rejected read shows an alert and the next open goes through (D-103 symptom)', async () => {
+    loadJsonlFile.mockRejectedValueOnce(new Error('The I/O read operation failed.'));
+    render(<Dropzone loaded={false} />);
+    drop([file('a.jsonl')]);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The I/O read operation failed.'));
+    drop([file('b.jsonl')]);
+    await waitFor(() => expect(loadJsonlFile).toHaveBeenCalledTimes(2));
+  });
+
   it('prevents the browser default on window dragover and drop, and stops after unmount', () => {
     const { unmount } = render(<Dropzone loaded={false} />);
     const over = new Event('dragover', { bubbles: true, cancelable: true });

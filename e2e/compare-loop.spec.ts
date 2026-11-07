@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test'
 import { DIST_URL, downloadExport } from './helpers'
 
+// WP 7c: LIVE_URL runs this spec against the deployed page instead of the file from disk
+const URL = process.env.LIVE_URL ?? DIST_URL
+
 // PRD §5 Compare loop; WP 7 gate (c): a four-candidate knockout with the
 // judgements of tests/fixtures/pairs/knockout-four-candidates.json, and the
 // undo/redo cursor (WP 3 c, WP 6c c and d).
@@ -14,7 +17,7 @@ const FILE =
   ].join('\n') + '\n'
 
 test('knockout, undo/redo cursor, digits, strength and the pairs export', async ({ page }) => {
-  await page.goto(DIST_URL)
+  await page.goto(URL)
   await page.getByLabel('JSONL file').setInputFiles({ name: 'knockout.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(FILE) })
   await expect(page.getByText('Prompt 1 of 5')).toBeVisible()
   await expect(page.getByText('Pair 1 of 3')).toBeVisible()

@@ -29,14 +29,23 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Install Playwright (Linux only)
+      # WP 7c (owner, 7 Nov 2026): WebKit and Firefox run the single-file, kept-bytes,
+      # compare-loop and keyboard-loop specs on every runner; the Chromium suite stays on Linux
+      - name: Install Playwright (Linux)
         if: runner.os == 'Linux'
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit firefox
 
-      - name: Single-file build (Linux only)
-        if: runner.os == 'Linux'
+      - name: Install Playwright WebKit and Firefox (macOS, Windows)
+        if: runner.os != 'Linux'
+        run: npx playwright install --with-deps webkit firefox
+
+      - name: Single-file build
         run: npm run build:single
 
-      - name: E2E tests (Linux only)
+      - name: E2E tests, Chromium, WebKit and Firefox (Linux)
         if: runner.os == 'Linux'
         run: npm run e2e
+
+      - name: E2E tests, WebKit and Firefox (macOS, Windows)
+        if: runner.os != 'Linux'
+        run: npm run e2e -- --project=webkit --project=firefox
