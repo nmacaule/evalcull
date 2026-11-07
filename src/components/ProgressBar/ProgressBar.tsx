@@ -2,6 +2,8 @@
  * Counter and progress bar (PRD §2.8; owner Q2, 4 Nov 2026): every field
  * always, zeros included. Left, right, tie and both bad count judged pairs;
  * kept, rejected, skipped and edited count candidates.
+ * WP 7b: a neutral-9 fill on a neutral-3 track beside the counts, which are
+ * text-chrome in tabular figures (PRD §2.11 screen 2, DR-018).
  */
 
 import type { ReviewState } from '../../store/useReviewStore';
@@ -35,18 +37,18 @@ export function ProgressBar({ counts, mode }: ProgressBarProps) {
   const percent = counts.total > 0 ? (counts.reviewed / counts.total) * 100 : 0;
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex items-center gap-2">
       <div
         role="progressbar"
         aria-label="Reviewed"
         aria-valuemin={0}
         aria-valuenow={counts.reviewed}
         aria-valuemax={counts.total}
-        className="h-1.5 w-full rounded bg-muted overflow-hidden"
+        className="h-1 w-progress shrink-0 rounded-control bg-neutral-3 overflow-hidden"
       >
-        <div className="h-full bg-primary" style={{ width: `${percent}%` }} />
+        <div className="h-full bg-neutral-9" style={{ width: `${percent}%` }} />
       </div>
-      <div className="text-xs text-muted-foreground" data-testid="progress-text">
+      <div className="text-chrome text-neutral-11" data-numeric data-testid="progress-text">
         {parts.join(' · ')}
       </div>
     </div>

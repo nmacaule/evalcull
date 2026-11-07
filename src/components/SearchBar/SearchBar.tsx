@@ -54,7 +54,7 @@ export function SearchBar({ onClose }: SearchBarProps) {
   };
 
   return (
-    <div role="search" className="flex items-center gap-2 border-b px-4 py-2 text-sm">
+    <div role="search" className="flex items-center gap-2 border-b border-neutral-6 bg-neutral-2 px-4 py-2 text-chrome text-neutral-12 animate-panel">
       <input
         aria-label="Search"
         autoFocus
@@ -70,10 +70,10 @@ export function SearchBar({ onClose }: SearchBarProps) {
             onClose();
           }
         }}
-        className="h-8 w-80 rounded-md border border-input bg-background px-2"
+        className="w-panel rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12"
       />
-      <span className="text-muted-foreground">Searches the file's raw text.</span>
-      {searching && <span className="text-muted-foreground">Searching…</span>}
+      <span className="text-neutral-11">Searches the file's raw text.</span>
+      {searching && <span className="text-neutral-11">Searching…</span>}
       {message && <span role="status">{message}</span>}
     </div>
   );

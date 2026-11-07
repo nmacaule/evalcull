@@ -23,6 +23,7 @@ import type { ExportName, ExportStats } from '../../export';
 import { countPhrase } from '../../lib/plural';
 import { downloadBlob } from '../../lib/download';
 import { downloadSession } from '../../lib/sessionDownload';
+import { AlertText, StatusMark } from '../StatusMark';
 
 export interface ExportPanelProps {
   open: boolean;
@@ -179,21 +180,20 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-dialog-wide dialog-max overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Export</DialogTitle>
           <DialogDescription>Downloads are written by your browser; nothing is uploaded.</DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-wrap items-center gap-4 text-sm">
+        <div className="flex flex-wrap items-center gap-4 text-chrome">
           {hasBom && (
-            <span className="text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-              BOM present
-            </span>
+            // A warning: a word and dot in neutral-11 (DR-017)
+            <StatusMark tone="quiet" word="BOM present" />
           )}
           <fieldset className="flex items-center gap-2">
             <legend className="sr-only">Byte order mark</legend>
-            <span className="text-muted-foreground">BOM:</span>
+            <span className="text-neutral-11">BOM:</span>
             {(['keep', 'strip', 'add'] as Bom[]).map((b) => (
               <label key={b} className="flex items-center gap-1">
                 <input type="radio" name="bom" value={b} checked={bom === b} onChange={() => setBom(b)} />
@@ -214,9 +214,7 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
         </div>
 
         {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
+          <AlertText>{error}</AlertText>
         )}
 
         <div className="flex flex-col gap-3">
@@ -224,12 +222,12 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
             EXPORTS.map((name) => {
               const st = exact[name] ?? previews[name];
               return (
-                <section key={name} aria-label={name} className="rounded-lg border p-3">
+                <section key={name} aria-label={name} className="rounded-panel border border-neutral-6 p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-mono text-sm font-semibold">{name}</h3>
+                    <h3 className="font-mono text-mono font-semibold">{name}</h3>
                     <Button
                       size="sm"
-                      variant="outline"
+                      variant="secondary"
                       disabled={busy !== null}
                       onClick={() => download(name)}
                       aria-label={`Download ${name}`}
@@ -238,7 +236,7 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
                     </Button>
                   </div>
                   {exportTexts(name, st, jsonl).map((t) => (
-                    <p key={t} className="text-sm text-muted-foreground mt-1">
+                    <p key={t} className="text-chrome text-neutral-11 mt-1">
                       {t}
                     </p>
                   ))}
@@ -247,14 +245,14 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
             })}
         </div>
 
-        <section aria-label="Session" className="rounded-lg border p-3 flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">Session</h3>
-          <p className="text-sm text-muted-foreground">{STORAGE_NOTE}</p>
+        <section aria-label="Session" className="rounded-panel border border-neutral-6 p-3 flex flex-col gap-2">
+          <h3 className="label text-neutral-11">Session</h3>
+          <p className="text-chrome text-neutral-11">{STORAGE_NOTE}</p>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={downloadSession}>
+            <Button size="sm" variant="secondary" onClick={downloadSession}>
               Download session
             </Button>
-            <Button size="sm" variant="outline" disabled={switching} onClick={() => sessionInput.current?.click()}>
+            <Button size="sm" variant="secondary" disabled={switching} onClick={() => sessionInput.current?.click()}>
               Load session
             </Button>
             <input
@@ -270,24 +268,24 @@ function ExportPanelForFile({ open, onOpenChange }: ExportPanelProps) {
             />
           </div>
           {session.kind === 'refused' && (
-            <div role="alert" className="text-sm text-destructive flex items-center gap-2">
-              <span>{session.message}</span>
+            <div className="flex items-center gap-2">
+              <AlertText>{session.message}</AlertText>
               {offerLoadAnyway && (
-                <Button size="sm" variant="outline" disabled={switching} onClick={loadAnyway}>
+                <Button size="sm" variant="secondary" disabled={switching} onClick={loadAnyway}>
                   Load anyway
                 </Button>
               )}
             </div>
           )}
           {newerLocalCopy && (
-            <div className="text-sm flex items-center gap-2">
+            <div className="text-chrome text-neutral-12 flex items-center gap-2">
               <span>
                 A newer copy saved in this browser at {new Date(newerLocalCopy.savedAt).toLocaleString('en-US')}{' '}
                 differs from the session file.
               </span>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 disabled={switching}
                 onClick={() => useReviewStore.getState().applyNewerLocalCopy()}
               >

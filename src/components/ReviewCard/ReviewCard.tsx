@@ -5,16 +5,20 @@
  * optional badge such as "current best".
  * WP 6b: Shows the edited values (D-014), non-strings through lossless-json
  * (D-015), the candidate's status (D-016) and W's whitespace reveal (D-025).
+ * WP 7b (PRD §2.11 screens 3 and 4): the card sits on neutral-2, and a focused
+ * compare card on neutral-3 with the ring; content is text-content within 70ch;
+ * status, preference and edited show as a word and dot at the top right; an
+ * error is an alert in status-rejected (DR-017).
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { CandidateRef, DecisionStatus, RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import type { EditValue } from '../../store/types';
 import { getByPath, parsePath, setByPath } from '../../lib/path';
 import { displayValue } from '../../lib/display';
-import { revealWhitespace } from '../../lib/whitespace';
-import { RawView } from '../RawView';
+import { RawView, Revealed } from '../RawView';
+import { AlertText, StatusMark, statusTone } from '../StatusMark';
 import { DiffView } from '../DiffView';
 import { ConversationView } from '../ConversationView';
 
@@ -44,14 +48,19 @@ export interface ReviewCardProps {
   badge?: string;
   /** The candidate's status; kept, rejected and skipped are badged (D-016) */
   status?: DecisionStatus;
+  /** The judged pair's mark on this card: preferred, tie or both bad (§2.11 screen 3) */
+  preference?: 'preferred' | 'tie' | 'both bad';
+  /** A compare card: the focused one is on neutral-3 with the ring (§2.11 Focus) */
+  compare?: boolean;
 }
 
 interface ContentRendererProps {
   record: ParsedRecord;
   /** The record's data with its edits applied */
   data: unknown;
-  /** Display text for a value, with whitespace revealed when W is on */
-  show: (value: unknown) => string;
+  /** A value as display text, with whitespace revealed when W is on */
+  show: (value: unknown) => ReactNode;
+  showWhitespace: boolean;
   format: RecordFormat;
   /** Candidate index k of an "i:k" ref; null for a line ref "i" */
   candidateIndex: number | null;
@@ -69,6 +78,7 @@ function ContentRenderer({
   record,
   data,
   show,
+  showWhitespace,
   format,
   candidateIndex,
   onSelectTurn,
@@ -77,9 +87,7 @@ function ContentRenderer({
   // Handle parse errors
   if (!record.ok) {
     return (
-      <div className="text-sm text-destructive">
-        Parse error: {record.error}
-      </div>
+      <AlertText>Parse error: {record.error}</AlertText>
     );
   }
 
@@ -87,7 +95,7 @@ function ContentRenderer({
     case 'flat': {
       const response = getByPath(data, parsePath(format.responsePath));
       return (
-        <div className="whitespace-pre-wrap text-sm">
+        <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">
           {show(response)}
         </div>
       );
@@ -96,13 +104,13 @@ function ContentRenderer({
     case 'messages': {
       const messages = getByPath(data, parsePath(format.path));
       if (!Array.isArray(messages)) {
-        return <div className="text-sm text-muted-foreground">(no messages)</div>;
+        return <div className="text-chrome text-neutral-11">(no messages)</div>;
       }
       const typedMessages = messages.map((msg: unknown) => {
         const m = msg as Record<string, unknown>;
         return {
           role: String(m[format.roleKey] ?? ''),
-          content: show(m[format.contentKey]),
+          content: displayValue(m[format.contentKey]),
         };
       });
       return (
@@ -111,6 +119,7 @@ function ContentRenderer({
           roles={format.roles}
           editingTurnIndex={selectedTurnIndex}
           onSelectTurn={onSelectTurn}
+          showWhitespace={showWhitespace}
         />
       );
     }
@@ -132,18 +141,14 @@ function ContentRenderer({
         <div className="flex flex-col gap-2">
           {hasChosen && (
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">
-                Chosen
-              </div>
-              <div className="whitespace-pre-wrap text-sm">{show(chosen)}</div>
+              <div className="label text-neutral-11 mb-1">Chosen</div>
+              <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">{show(chosen)}</div>
             </div>
           )}
           {hasRejected && (
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">
-                Rejected
-              </div>
-              <div className="whitespace-pre-wrap text-sm">{show(rejected)}</div>
+              <div className="label text-neutral-11 mb-1">Rejected</div>
+              <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">{show(rejected)}</div>
             </div>
           )}
         </div>
@@ -153,11 +158,11 @@ function ContentRenderer({
     case 'candidates': {
       const candidates = getByPath(data, parsePath(format.candidatesPath));
       if (!Array.isArray(candidates)) {
-        return <div className="text-sm text-muted-foreground">(no candidates)</div>;
+        return <div className="text-chrome text-neutral-11">(no candidates)</div>;
       }
       // "i:k" names candidates[k]; a line ref "i" shows the first, as before
       return (
-        <div className="whitespace-pre-wrap text-sm">
+        <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">
           {show(candidates[candidateIndex ?? 0])}
         </div>
       );
@@ -166,7 +171,7 @@ function ContentRenderer({
     case 'unknown':
     default:
       return (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-chrome text-neutral-11">
           Unknown format - use raw view
         </div>
       );
@@ -185,6 +190,8 @@ export function ReviewCard({
   onEdit,
   badge,
   status,
+  preference,
+  compare = false,
 }: ReviewCardProps) {
   const [selectedTurnIndex, setSelectedTurnIndex] = useState<number | null>(null);
   // The edited badge toggles the card between its edited values and their diff (PRD §2.5)
@@ -198,12 +205,10 @@ export function ReviewCard({
     [record, edits]
   );
   const show = useMemo(
-    () => (value: unknown) => {
-      const text = displayValue(value);
-      return showWhitespace ? revealWhitespace(text) : text;
-    },
+    () => (value: unknown) => <Revealed text={displayValue(value)} show={showWhitespace} />,
     [showWhitespace]
   );
+  const tone = statusTone(status);
 
   // Handle turn selection for messages format
   const handleSelectTurn = useMemo(() => {
@@ -220,48 +225,44 @@ export function ReviewCard({
     // well as the ring: role="group" puts the card in the accessibility tree and
     // aria-current marks the current one of the cards shown (D-007)
     <div
-      className={`flex flex-col gap-2 rounded-lg border p-4 ${
-        focused ? 'ring-2 ring-primary' : ''
+      className={`flex flex-col gap-2 rounded-panel p-4 transition-state ${
+        compare && focused ? 'bg-neutral-3' : 'bg-neutral-2'
       }`}
       role="group"
       aria-current={focused ? 'true' : undefined}
+      data-card-focus={compare && focused ? '' : undefined}
       data-candidate-ref={candidateRef}
     >
-      {/* Header with status badges */}
+      {/* Header: the badge and ref at the left, the marks at the top right */}
       <div className="flex items-center gap-2">
-        {badge && (
-          <span className="text-xs font-medium px-2 py-0.5 rounded bg-primary text-primary-foreground">
-            {badge}
-          </span>
-        )}
-        {status && status !== 'unreviewed' && (
-          <span className="text-xs font-medium px-2 py-0.5 rounded bg-muted text-foreground">
-            {status}
-          </span>
-        )}
-        {hasEdits && (
-          <button
-            type="button"
-            onClick={() => setShowDiff((v) => !v)}
-            aria-pressed={showDiff}
-            title={showDiff ? 'Show the edited value' : 'Show the diff against the original'}
-            className="text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
-          >
-            edited
-          </button>
-        )}
-        <span className="text-xs text-muted-foreground font-mono">
-          {candidateRef}
+        {badge && <span className="label text-neutral-11">{badge}</span>}
+        <span className="font-mono text-mono text-neutral-11">{candidateRef}</span>
+        <span className="ml-auto flex items-center gap-3">
+          {preference && (
+            <StatusMark tone={preference === 'preferred' ? 'preferred' : 'quiet'} word={preference} />
+          )}
+          {tone && status && <StatusMark tone={tone} word={status} />}
+          {hasEdits && (
+            <button
+              type="button"
+              onClick={() => setShowDiff((v) => !v)}
+              aria-pressed={showDiff}
+              title={showDiff ? 'Show the edited value' : 'Show the diff against the original'}
+              className="rounded-control border border-transparent px-1 transition-state hover:border-neutral-8"
+            >
+              <StatusMark tone="edited" word="edited" />
+            </button>
+          )}
         </span>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto max-h-[60vh]" data-card-content>
+      <div className="flex-1 overflow-auto card-scroll" data-card-content>
         {showDiff && hasEdits && record.ok ? (
           <div className="flex flex-col gap-2">
             {Object.entries(edits!).map(([path, value]) => (
               <div key={path}>
-                <div className="text-xs font-mono text-muted-foreground mb-1">{path}</div>
+                <div className="font-mono text-mono text-neutral-11 mb-1">{path}</div>
                 <DiffView
                   original={displayValue(getByPath(record.data, parsePath(path)))}
                   edited={displayValue(value)}
@@ -276,6 +277,7 @@ export function ReviewCard({
             record={record}
             data={data}
             show={show}
+            showWhitespace={showWhitespace}
             format={format}
             candidateIndex={candidateIndexOf(candidateRef)}
             onSelectTurn={handleSelectTurn}

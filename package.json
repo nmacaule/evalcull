@@ -16,11 +16,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:perf": "playwright test -c playwright.perf.config.ts"
+    "e2e:perf": "playwright test -c playwright.perf.config.ts",
+    "e2e:screens": "playwright test -c playwright.screens.config.ts"
   },
   "dependencies": {
     "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
     "cn": "0.5.2",
     "idb": "8.0.4",
     "lossless-json": "4.3.3",
@@ -29,7 +29,6 @@
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-hotkeys-hook": "5.3.3",
-    "tailwind-merge": "3.7.0",
     "zustand": "5.0.16"
   },
   "devDependencies": {

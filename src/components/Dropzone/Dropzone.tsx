@@ -24,6 +24,8 @@ import { Button } from '@/components/ui/button';
 import { loadJsonlFile } from '../../readers/loadJsonlFile';
 import { SAMPLES, sampleFile } from '../../lib/samples';
 import { useReviewStore } from '../../store/useReviewStore';
+import { AlertText } from '../StatusMark';
+import { FixedOverlay } from '../FixedOverlay';
 
 export interface DropzoneProps {
   /** A file is open: render only the drop confirm, not the empty page */
@@ -120,7 +122,7 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
 
   const confirm = (
     <Dialog open={pending !== null} onOpenChange={(o) => !o && closeConfirm()}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-dropzone">
         <DialogHeader>
           <DialogTitle>Open another file</DialogTitle>
           <DialogDescription>
@@ -128,10 +130,11 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={closeConfirm}>
+          <Button variant="secondary" onClick={closeConfirm}>
             Cancel
           </Button>
           <Button
+            variant="primary"
             onClick={() => {
               const file = pending;
               closeConfirm();
@@ -150,57 +153,66 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
       <>
         {confirm}
         {(message || isLoading) && (
-          <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 rounded-md border bg-background px-4 py-2 text-sm shadow">
-            {message ? <span className="text-destructive">{message}</span> : 'Opening…'}
-          </div>
+          // One live region per state: status while opening, the message's own alert otherwise
+          <FixedOverlay
+            side="bottom"
+            role={message ? undefined : 'status'}
+            className="fixed bottom-4 left-1/2 -translate-x-1/2 rounded-panel border border-neutral-6 bg-neutral-2 px-4 py-2 text-chrome text-neutral-12"
+          >
+            {message ? <AlertText>{message}</AlertText> : 'Opening…'}
+          </FixedOverlay>
         )}
       </>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
-      <h1 className="text-2xl font-semibold">evalcull</h1>
-      <p className="text-muted-foreground">Drop a JSONL file anywhere on this page, or open one.</p>
-      <Button variant="outline" disabled={isLoading} onClick={() => input.current?.click()}>
-        {isLoading ? (
-          <>
-            Loading...
-            {progress && progress.total > 0 && (
-              <span className="ml-2 text-xs">{Math.round((progress.loaded / progress.total) * 100)}%</span>
-            )}
-          </>
-        ) : (
-          'Open file'
-        )}
-      </Button>
-      <input
-        ref={input}
-        type="file"
-        accept=".jsonl"
-        className="hidden"
-        aria-label="JSONL file"
-        onChange={(e) => {
-          accept(e.target.files);
-          e.target.value = '';
-        }}
-        disabled={isLoading}
-      />
-      {/* The embedded samples open through the same checks as a drop (DR-010) */}
-      <div className="flex flex-wrap justify-center gap-2">
-        {SAMPLES.map((sample) => (
-          <Button
-            key={sample.name}
-            variant="ghost"
-            size="sm"
-            disabled={isLoading}
-            onClick={() => accept([sampleFile(sample)])}
-          >
-            Open sample: {sample.label}
-          </Button>
-        ))}
+    <div data-screen="empty" className="min-h-screen bg-neutral-1 text-neutral-12 flex flex-col items-center justify-center gap-4 p-8">
+      <h1 className="text-heading font-semibold">evalcull</h1>
+      <p className="text-chrome text-neutral-11">Drop a JSONL file anywhere on this page, or open one.</p>
+      {/* The drop target (§2.11 screen 1): bordered in neutral-9 at radius 6 */}
+      <div className="flex flex-col items-center gap-4 rounded-panel border border-neutral-9 p-8">
+        <Button variant="secondary" disabled={isLoading} onClick={() => input.current?.click()}>
+          {isLoading ? (
+            <>
+              Loading...
+              {progress && progress.total > 0 && (
+                <span className="ml-2" data-numeric>{Math.round((progress.loaded / progress.total) * 100)}%</span>
+              )}
+            </>
+          ) : (
+            'Open file'
+          )}
+        </Button>
+        <input
+          ref={input}
+          type="file"
+          accept=".jsonl"
+          className="hidden"
+          aria-label="JSONL file"
+          onChange={(e) => {
+            accept(e.target.files);
+            e.target.value = '';
+          }}
+          disabled={isLoading}
+        />
+        {/* The embedded samples open through the same checks as a drop (DR-010) */}
+        {/* The candidates sample is the screen's one primary action (DR-019) */}
+        <div className="flex flex-wrap justify-center gap-2">
+          {SAMPLES.map((sample) => (
+            <Button
+              key={sample.name}
+              variant={sample.label === 'candidates' ? 'primary' : 'secondary'}
+              size="sm"
+              disabled={isLoading}
+              onClick={() => accept([sampleFile(sample)])}
+            >
+              Open sample: {sample.label}
+            </Button>
+          ))}
+        </div>
       </div>
-      {message && <p className="text-sm text-destructive">{message}</p>}
+      {message && <AlertText>{message}</AlertText>}
     </div>
   );
 }

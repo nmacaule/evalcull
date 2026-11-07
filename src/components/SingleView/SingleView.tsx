@@ -32,7 +32,7 @@ export function SingleView({
   status,
 }: SingleViewProps) {
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-column mx-auto">
       <ReviewCard
         record={record}
         rawText={rawText}

@@ -26,6 +26,14 @@ describe('cheat sheet', () => {
     expect(HOTKEY_TABLE.filter((h) => h.isNoOp)).toEqual([]);
   });
 
+  it('the cheat sheet lists Z under View with its description (PRD §2.2, O7)', () => {
+    render(<CheatSheet open={true} onOpenChange={() => {}} />);
+    const heading = screen.getByRole('heading', { name: 'View' });
+    const row = heading.parentElement!.querySelector('[data-hotkey="z"]');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toContain('Reading step: content 14 px or 16 px');
+  });
+
   it('describes the editor turn switch on the ↑ row', () => {
     render(<CheatSheet open={true} onOpenChange={() => {}} />);
     expect(document.querySelector('[data-hotkey="ArrowUp"]')!.textContent).toContain(

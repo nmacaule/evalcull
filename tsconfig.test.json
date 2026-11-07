@@ -25,6 +25,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["tests/**/*", "src/**/*"],
+  "include": ["tests/**/*", "src/**/*", "e2e/design/colour.ts", "e2e/design/tokens.ts"],
   "exclude": ["node_modules"]
 }

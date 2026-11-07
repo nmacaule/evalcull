@@ -1,15 +1,22 @@
 /**
  * Threaded conversation renderer for messages-format records.
- * WP 6a: Renders messages with role badges, supports turn selection for editing.
+ * WP 6a: Renders messages with role labels, supports turn selection for editing.
+ * WP 7b (PRD §2.11 screen 5): turns 12 px apart, each role a text-label in
+ * neutral-11 with no colour fill; a hovered editable turn keeps its surface and
+ * shows the neutral-8 border (DR-021); the selected turn is accent-3 with all
+ * its text in neutral-12 (O15); W's marks render through Revealed (DR-022).
  */
 
 import { useMemo } from 'react';
+import { Revealed } from '../RawView';
 
 export interface ConversationViewProps {
+  /** Each turn's content as display text, before any whitespace reveal */
   messages: Array<{ role: string; content: string }>;
   roles: { user: string[]; assistant: string[]; system: string[] };
   editingTurnIndex: number | null;
   onSelectTurn: (index: number) => void;
+  showWhitespace: boolean;
 }
 
 type RoleCategory = 'user' | 'assistant' | 'system';
@@ -25,22 +32,12 @@ function getRoleCategory(
   return 'user';
 }
 
-function getRoleBadgeStyles(category: RoleCategory): string {
-  switch (category) {
-    case 'user':
-      return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
-    case 'assistant':
-      return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
-    case 'system':
-      return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
-  }
-}
-
 export function ConversationView({
   messages,
   roles,
   editingTurnIndex,
   onSelectTurn,
+  showWhitespace,
 }: ConversationViewProps) {
   const categorizedMessages = useMemo(() => {
     return messages.map((msg, index) => ({
@@ -55,13 +52,14 @@ export function ConversationView({
       {categorizedMessages.map((msg) => {
         const isEditable = msg.category === 'assistant';
         const isSelected = editingTurnIndex === msg.index;
+        const secondary = isSelected ? 'text-neutral-12' : 'text-neutral-11';
 
         return (
           <div
             key={msg.index}
-            className={`flex flex-col gap-1 rounded-md p-3 ${
-              isSelected ? 'ring-2 ring-primary' : ''
-            } ${isEditable ? 'cursor-pointer hover:bg-muted/50' : ''}`}
+            className={`flex flex-col gap-1 rounded-control border p-3 transition-state ${
+              isSelected ? 'border-transparent bg-accent-3' : 'border-transparent'
+            } ${isEditable ? 'cursor-pointer hover:border-neutral-8' : ''}`}
             onClick={isEditable ? () => onSelectTurn(msg.index) : undefined}
             role={isEditable ? 'button' : undefined}
             tabIndex={isEditable ? 0 : undefined}
@@ -77,18 +75,12 @@ export function ConversationView({
             }
           >
             <div className="flex items-center gap-2">
-              <span
-                className={`text-xs font-medium px-2 py-0.5 rounded ${getRoleBadgeStyles(msg.category)}`}
-              >
-                {msg.role}
-              </span>
-              {isEditable && (
-                <span className="text-xs text-muted-foreground">
-                  (click to edit)
-                </span>
-              )}
+              <span className={`label ${secondary}`}>{msg.role}</span>
+              {isEditable && <span className={`text-chrome ${secondary}`}>(click to edit)</span>}
             </div>
-            <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+            <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">
+              <Revealed text={msg.content} show={showWhitespace} />
+            </div>
           </div>
         );
       })}

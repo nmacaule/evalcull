@@ -66,17 +66,21 @@ export function CompareView({
 }: CompareViewProps) {
   const incumbentSide = knockout.incumbent?.side;
   const judged = knockout.complete ? knockout.shown?.judged : undefined;
+  // The judged pair's mark on each card (§2.11 screen 3): preferred on the chosen
+  // card; tie or both bad on both
+  const markFor = (side: 'left' | 'right') =>
+    judged === side ? 'preferred' : judged === 'tie' ? 'tie' : judged === 'both_bad' ? 'both bad' : undefined;
 
   return (
     <div className="flex flex-col gap-4">
       {/* Pair counter, only for prompts with more than two candidates */}
       {candidateCount > 2 && knockout.shown && (
-        <div className="text-center text-sm text-muted-foreground">
+        <div className="text-center text-chrome text-neutral-11" data-numeric>
           Pair {knockout.shown.pair + 1} of {knockout.totalPairs}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-6">
         {/* Left candidate */}
         <ReviewCard
           record={leftRecord}
@@ -90,6 +94,8 @@ export function CompareView({
           onEdit={onEdit ? (path) => onEdit(leftRef, path) : undefined}
           badge={incumbentSide === 'left' ? 'current best' : undefined}
           status={leftStatus}
+          preference={markFor('left')}
+          compare
         />
 
         {/* Right candidate */}
@@ -105,12 +111,14 @@ export function CompareView({
           onEdit={onEdit ? (path) => onEdit(rightRef, path) : undefined}
           badge={incumbentSide === 'right' ? 'current best' : undefined}
           status={rightStatus}
+          preference={markFor('right')}
+          compare
         />
       </div>
 
       {/* A completed prompt shows its last judged pair with the preference marked */}
       {judged && (
-        <div className="text-center text-sm text-muted-foreground">
+        <div className="text-center text-chrome text-neutral-11">
           {JUDGED_LABEL[judged]}
         </div>
       )}

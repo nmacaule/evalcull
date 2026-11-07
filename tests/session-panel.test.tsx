@@ -30,6 +30,8 @@ const twoPrompts = () =>
   );
 
 const status = () => screen.getByRole('status').textContent;
+// A failed save, storage off and changes not saved are errors, announced as an alert (DR-017)
+const alert = () => screen.getByRole('alert').textContent;
 
 // fake-indexeddb runs on setImmediate, which the fake clock leaves real
 async function settle(): Promise<void> {
@@ -104,7 +106,7 @@ describe('storage state in the header', () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     await settle();
-    expect(status()).toBe('Save failed: Sidecar PUT failed: 500 boom');
+    expect(alert()).toBe('Save failed: Sidecar PUT failed: 500 boom');
   });
 
   it('reads Storage off once a save finds neither sink', async () => {
@@ -119,7 +121,7 @@ describe('storage state in the header', () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     await settle();
-    expect(status()).toBe('Storage off: IndexedDB not available');
+    expect(alert()).toBe('Storage off: IndexedDB not available');
   });
 });
 
@@ -135,7 +137,7 @@ describe('a cancelled switch in the header (DR-001 B-i)', () => {
       await loadSource(makeSource(lines, [0, 1], [1, 1], { fingerprint: 'fp-b' }), FLAT_IO);
     });
 
-    expect(status()).toBe(
+    expect(alert()).toBe(
       "The current file's changes could not be saved: IndexedDB not available. Download the session to keep them."
     );
     expect(screen.getByRole('button', { name: 'Open anyway, discarding changes' })).toBeInTheDocument();
