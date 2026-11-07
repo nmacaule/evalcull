@@ -250,6 +250,15 @@ export const HOTKEY_TABLE: HotkeyEntry[] = [
     modes: ['both'],
     firesInForm: false,
   },
+  // The reading step (PRD §2.2, §2.11, DR-016 O7): view state, never saved
+  {
+    key: 'z',
+    description: 'Reading step: content 14 px or 16 px',
+    action: 'toggleReadingStep',
+    group: 'View',
+    modes: ['both'],
+    firesInForm: false,
+  },
   // Filter and cheat sheet (wired in 6a)
   {
     key: 'f',

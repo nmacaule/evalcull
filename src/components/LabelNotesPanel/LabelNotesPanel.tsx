@@ -78,7 +78,7 @@ export function LabelNotesPanel({ open, onOpenChange, candidateRef, focusField }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-md"
+        className="max-w-panel-md"
         onKeyDown={onKeyDown}
         onOpenAutoFocus={(e) => {
           e.preventDefault();
@@ -91,15 +91,16 @@ export function LabelNotesPanel({ open, onOpenChange, candidateRef, focusField }
             For {candidateRef}. Mod+Enter saves, Esc closes without saving.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3 text-sm">
+        <div className="flex flex-col gap-3 text-chrome">
           <label className="flex flex-col gap-1">
-            <span>Labels</span>
+            <span className="label text-neutral-11">Labels</span>
             <div className="flex flex-wrap gap-1">
               {labels.map((l) => (
-                <span key={l} className="flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-xs">
+                <span key={l} className="flex items-center gap-1 rounded-control bg-neutral-3 px-2 py-1 text-neutral-12">
                   {l}
                   <button
                     type="button"
+                    className="rounded-control px-1"
                     aria-label={`Remove label ${l}`}
                     onClick={() => setLabels(labels.filter((x) => x !== l))}
                   >
@@ -121,32 +122,32 @@ export function LabelNotesPanel({ open, onOpenChange, candidateRef, focusField }
                   setLabels(labels.slice(0, -1));
                 }
               }}
-              className="h-8 rounded-md border border-input bg-background px-2"
+              className="rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span>Score</span>
+            <span className="label text-neutral-11">Score</span>
             <input
               aria-label="Score"
               type="number"
               value={score}
               onChange={(e) => setScore(e.target.value)}
-              className="h-8 w-32 rounded-md border border-input bg-background px-2"
+              className="w-score rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12" data-numeric
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span>Notes</span>
+            <span className="label text-neutral-11">Notes</span>
             <textarea
               ref={notesRef}
               aria-label="Notes"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="min-h-[100px] rounded-md border border-input bg-background px-2 py-1"
+              className="field-min-sm rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-content text-neutral-12"
             />
           </label>
         </div>
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={save}>Save</Button>

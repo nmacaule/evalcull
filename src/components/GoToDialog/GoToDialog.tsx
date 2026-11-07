@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useReviewStore } from '../../store/useReviewStore';
+import { AlertText } from '../StatusMark';
 
 export interface GoToDialogProps {
   open: boolean;
@@ -52,7 +53,7 @@ export function GoToDialog({ open, onOpenChange, mode, total }: GoToDialogProps)
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-w-xs">
+      <DialogContent className="max-w-goto">
         <DialogHeader>
           <DialogTitle>{label}</DialogTitle>
           <DialogDescription>Enter on an empty field goes to the next unreviewed.</DialogDescription>
@@ -69,12 +70,10 @@ export function GoToDialog({ open, onOpenChange, mode, total }: GoToDialogProps)
               submit();
             }
           }}
-          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+          className="rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12" data-numeric
         />
         {message && (
-          <p role="alert" className="text-sm text-destructive">
-            {message}
-          </p>
+          <AlertText>{message}</AlertText>
         )}
       </DialogContent>
     </Dialog>

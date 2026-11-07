@@ -37,29 +37,30 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
   // Every entry names its group, so every §2.2 key appears exactly once
   const renderGroup = (title: string, keys: typeof HOTKEY_TABLE) => (
     <div className="mb-4" key={title}>
-      <h3 className="text-sm font-semibold mb-2">{title}</h3>
+      <h3 className="label text-neutral-11 mb-2">{title}</h3>
       <div className="grid gap-1">
         {keys.map((entry) => (
           <div
             key={entry.key}
-            className="flex items-center justify-between gap-4 text-sm"
+            className="flex items-center justify-between gap-4 text-chrome"
             data-hotkey={entry.key}
           >
-            <span className="text-muted-foreground">
+            <span className="text-neutral-12">
               {entry.description}
               {entry.modes.length === 1 && entry.modes[0] === 'compare' && (
-                <span className="ml-1 text-xs">(compare mode)</span>
+                <span className="ml-1 text-neutral-11">(compare mode)</span>
               )}
             </span>
-            <span className="font-mono text-xs bg-muted px-2 py-0.5 rounded whitespace-nowrap">
+            {/* Keycaps: text-chrome on neutral-3 in a neutral-7 border (§2.11 screen 8) */}
+            <kbd className="rounded-control border border-neutral-7 bg-neutral-3 px-2 py-1 text-chrome text-neutral-12 whitespace-nowrap">
               {formatKey(entry.key)}
               {entry.altKey && (
-                <span className="text-muted-foreground">
+                <span className="text-neutral-11">
                   {' '}
                   / {formatKey(entry.altKey)}
                 </span>
               )}
-            </span>
+            </kbd>
           </div>
         ))}
       </div>
@@ -68,7 +69,7 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-dialog sheet-max overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Keyboard Shortcuts</DialogTitle>
         </DialogHeader>
@@ -80,7 +81,7 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
             )
           )}
         </div>
-        <div className="mt-4 text-xs text-muted-foreground text-center">
+        <div className="mt-4 text-chrome text-neutral-11 text-center">
           Press ? to toggle this dialog
         </div>
       </DialogContent>

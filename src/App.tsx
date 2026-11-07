@@ -30,6 +30,8 @@ import { ExportPanel } from './components/ExportPanel';
 import { LabelNotesPanel } from './components/LabelNotesPanel';
 import { GoToDialog } from './components/GoToDialog';
 import { SearchBar } from './components/SearchBar';
+import { AlertText } from './components/StatusMark';
+import { FixedOverlay } from './components/FixedOverlay';
 import { useHotkeys } from './hooks/useHotkeys';
 import { parsePath, normalisePath, stringifyPath, getByPath } from './lib/path';
 import { displayValue } from './lib/display';
@@ -141,6 +143,15 @@ function App() {
   // Local UI state
   const [showRaw, setShowRaw] = useState(false);
   const [showWhitespace, setShowWhitespace] = useState(false);
+  // Z, the reading step: view state with W's lifetime, never written to the session (PRD §2.2, O7)
+  const [readingStep, setReadingStep] = useState(false);
+  // On the document root, so content in a dialog's portal reads 16 / 24 too (O7)
+  useEffect(() => {
+    const root = document.documentElement;
+    if (readingStep) root.setAttribute('data-reading-step', '');
+    else root.removeAttribute('data-reading-step');
+    return () => root.removeAttribute('data-reading-step');
+  }, [readingStep]);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [schemaMapperOpen, setSchemaMapperOpen] = useState(false);
   // The mapping modal holds a draft only once the user has changed a field (DR-001 rule 6, D-069)
@@ -564,6 +575,7 @@ function App() {
     redo,
     toggleRaw: () => setShowRaw((prev) => !prev),
     toggleWhitespace: () => setShowWhitespace((prev) => !prev),
+    toggleReadingStep: () => setReadingStep((prev) => !prev),
     cycleFilter,
     showCheatSheet,
     scrollUp,
@@ -622,9 +634,9 @@ function App() {
 
   // The storage state stays visible on every screen while a file is open (Q6)
   const storageBar = (
-    <div className="fixed top-2 right-4">
+    <FixedOverlay side="top" className="fixed top-2 right-4 rounded-panel bg-neutral-1 px-2 py-1">
       <StorageIndicator state={storageState} blockedReason={draftReason} />
-    </div>
+    </FixedOverlay>
   );
 
   // Every screen with a file open returns the same three slots, content, storage
@@ -640,9 +652,9 @@ function App() {
   // Row-based sources not yet supported (WP 8)
   if (source.kind !== 'jsonl') {
     return withChrome(
-      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
-        <h1 className="text-2xl font-semibold">evalcull</h1>
-        <p className="text-muted-foreground">
+      <div className="min-h-screen bg-neutral-1 text-neutral-12 flex flex-col items-center justify-center gap-4">
+        <h1 className="text-heading font-semibold">evalcull</h1>
+        <p className="text-chrome text-neutral-11">
           {source.container} files are not supported yet
         </p>
       </div>,
@@ -653,11 +665,9 @@ function App() {
   // Show regroup loading overlay
   if (isRegrouping) {
     return withChrome(
-      <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4" />
-          <p className="text-muted-foreground">Re-grouping records...</p>
-        </div>
+      <div className="min-h-screen bg-neutral-1 text-neutral-12 flex items-center justify-center">
+        {/* Text only: nothing loops (§2.11 Motion) */}
+        <p role="status" className="text-chrome text-neutral-11">Re-grouping records...</p>
       </div>,
       true
     );
@@ -683,13 +693,13 @@ function App() {
     }
 
     return withChrome(
-      <div className="min-h-screen bg-background text-foreground p-8">
-        <div className="max-w-3xl mx-auto">
-          <h2 className="text-lg font-semibold mb-4">
+      <div data-screen="editor" className="min-h-screen bg-neutral-1 text-neutral-12 p-8">
+        <div className="max-w-column mx-auto">
+          <h2 className="text-heading font-semibold mb-4">
             Editing {editing.ref}
           </h2>
-          <p className="text-sm text-muted-foreground mb-4">
-            Path: <code className="font-mono">{editing.path}</code>
+          <p className="text-chrome text-neutral-11 mb-4">
+            Path: <code className="font-mono text-mono">{editing.path}</code>
           </p>
           <Editor
             key={`${editing.ref} ${editing.path}`}
@@ -726,53 +736,48 @@ function App() {
 
   // Main view
   return withChrome(
-    <div className="min-h-screen bg-background text-foreground">
-      {/* Header */}
-      <header className="border-b px-4 py-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="font-semibold">evalcull</h1>
-            <span className="text-sm text-muted-foreground">{sourceName}</span>
-            <StorageIndicator state={storageState} blockedReason={draftReason} />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">
+    <div data-screen={mode} className="min-h-screen bg-neutral-1 text-neutral-12">
+      {/* Header (§2.11 screen 2): one 13 px row on neutral-1 over a neutral-6 line;
+          the accent appears here only as the ring */}
+      <header className="border-b border-neutral-6 px-4 py-2 text-chrome">
+        <div className="flex flex-wrap items-center gap-4">
+          <h1 className="font-semibold">evalcull</h1>
+          <span className="text-neutral-12">{sourceName}</span>
+          <ProgressBar counts={counts()} mode={mode} />
+          <StorageIndicator state={storageState} blockedReason={draftReason} />
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-neutral-11">
               Filter: {filter}
             </span>
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               disabled={fileOpening}
               onClick={() => setSchemaMapperOpen(true)}
             >
               Configure format
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setExportOpen(true)}>
+            <Button variant="secondary" size="sm" onClick={() => setExportOpen(true)}>
               Export
             </Button>
           </div>
         </div>
-        <div className="mt-2">
-          <ProgressBar counts={counts()} mode={mode} />
-        </div>
-        {lastError && (
-          <div className="text-sm text-destructive mt-1">{lastError}</div>
-        )}
+        {lastError && <AlertText className="mt-1">{lastError}</AlertText>}
       </header>
 
       {searchOpen && <SearchBar onClose={() => setSearchOpen(false)} />}
 
       {/* Main content */}
       <main className="p-4">
-        <div className="max-w-6xl mx-auto">
+        <div className="max-w-page mx-auto">
           <PromptHeader record={leftRecord} format={format} showWhitespace={showWhitespace} />
         </div>
         {mode === 'compare' ? (
           leftRecord && (singleCard || rightRecord) ? (
             singleCard || !knockout ? (
               // Prompt with fewer than two candidates in compare mode
-              <div className="max-w-3xl mx-auto">
-                <div className="text-center text-sm text-muted-foreground mb-4">
+              <div className="max-w-column mx-auto">
+                <div className="text-center text-chrome text-neutral-11 mb-4">
                   Only one candidate for this prompt
                 </div>
                 <SingleView
@@ -809,7 +814,7 @@ function App() {
               />
             )
           ) : (
-            <div className="text-center text-muted-foreground">Loading...</div>
+            <div className="text-center text-chrome text-neutral-11">Loading...</div>
           )
         ) : leftRecord ? (
           <SingleView
@@ -824,18 +829,18 @@ function App() {
             status={decisions.get(leftRef)?.status}
           />
         ) : (
-          <div className="text-center text-muted-foreground">Loading...</div>
+          <div className="text-center text-chrome text-neutral-11">Loading...</div>
         )}
 
         {/* Navigation info */}
-        <div className="mt-4 text-center text-sm text-muted-foreground">
+        <div className="mt-4 text-center text-chrome text-neutral-11" data-numeric>
           {mode === 'compare'
             ? `Prompt ${cursor + 1} of ${source.index.groupCount}`
             : `Record ${cursor + 1} of ${source.index.lineCount}`}
         </div>
 
         {metadataOpen && (
-          <div className="max-w-6xl mx-auto">
+          <div className="max-w-page mx-auto">
             <MetadataPanel
               record={!singleCard && focus === 1 ? rightRecord : leftRecord}
               format={format}

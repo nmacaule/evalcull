@@ -41,6 +41,8 @@ export interface HotkeyHandlers {
   // View toggles
   toggleRaw: () => void;
   toggleWhitespace: () => void;
+  /** Z, the reading step (PRD §2.2, O7) */
+  toggleReadingStep: () => void;
   cycleFilter: () => void;
   showCheatSheet: () => void;
 
@@ -87,6 +89,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     redo,
     toggleRaw,
     toggleWhitespace,
+    toggleReadingStep,
     cycleFilter,
     showCheatSheet,
     scrollUp,
@@ -363,6 +366,15 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     () => {
       if (isModalOpen) return;
       toggleWhitespace();
+    },
+    { enableOnFormTags: false, useKey: true }
+  );
+
+  useHotkeysHook(
+    'z',
+    () => {
+      if (isModalOpen) return;
+      toggleReadingStep();
     },
     { enableOnFormTags: false, useKey: true }
   );

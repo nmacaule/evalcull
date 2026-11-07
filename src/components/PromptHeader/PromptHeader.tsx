@@ -2,13 +2,15 @@
  * The prompt the cards answer, shown above them (D-013): the value at
  * promptPath for flat, candidates and preference formats. A conversation's
  * prompt is its earlier turns, which its card already shows.
+ * WP 7b (PRD §2.11): a panel on neutral-2, its label as text-label, the prompt
+ * as text-content within 70ch; W's marks through Revealed (DR-022).
  */
 
 import type { RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import { getByPath, parsePath } from '../../lib/path';
 import { displayValue } from '../../lib/display';
-import { revealWhitespace } from '../../lib/whitespace';
+import { Revealed } from '../RawView';
 
 export interface PromptHeaderProps {
   record: ParsedRecord | null;
@@ -25,16 +27,17 @@ export function PromptHeader({ record, format, showWhitespace }: PromptHeaderPro
   let text: string | null = null;
   if (format.promptPath) {
     text = displayValue(getByPath(record.data, parsePath(format.promptPath)));
-    if (showWhitespace) text = revealWhitespace(text);
   }
 
   return (
-    <section aria-label="Prompt" className="mb-4 rounded-lg border bg-muted/30 p-4">
-      <div className="text-xs font-medium text-muted-foreground mb-1">Prompt</div>
+    <section aria-label="Prompt" className="mb-6 rounded-panel bg-neutral-2 p-4">
+      <div className="label text-neutral-11 mb-1">Prompt</div>
       {text === null ? (
-        <div className="text-sm text-muted-foreground">(no prompt field)</div>
+        <div className="text-chrome text-neutral-11">(no prompt field)</div>
       ) : (
-        <div className="whitespace-pre-wrap text-sm">{text}</div>
+        <div className="whitespace-pre-wrap text-content text-neutral-12 max-w-content">
+          <Revealed text={text} show={showWhitespace} />
+        </div>
       )}
     </section>
   );

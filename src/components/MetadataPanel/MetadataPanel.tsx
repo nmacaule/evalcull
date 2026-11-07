@@ -7,6 +7,7 @@
 import type { RecordFormat } from '../../types';
 import type { ParsedRecord } from '../../store/types';
 import { unmappedFields } from '../../lib/metadata';
+import { StatusMark } from '../StatusMark';
 
 export interface MetadataPanelProps {
   record: ParsedRecord | null;
@@ -16,23 +17,22 @@ export interface MetadataPanelProps {
 export function MetadataPanel({ record, format }: MetadataPanelProps) {
   const fields = record?.ok ? unmappedFields(record.data, format) : [];
   return (
-    <section aria-label="Metadata" className="mt-4 rounded-lg border p-4">
-      <h2 className="text-sm font-semibold mb-2">Metadata</h2>
+    <section aria-label="Metadata" className="mt-6 rounded-panel bg-neutral-2 p-4 text-chrome animate-panel">
+      <h2 className="label text-neutral-11 mb-2">Metadata</h2>
       {!record || !record.ok ? (
-        <p className="text-sm text-muted-foreground">Unparseable line: no fields.</p>
+        <p className="text-neutral-11">Unparseable line: no fields.</p>
       ) : fields.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No other fields.</p>
+        <p className="text-neutral-11">No other fields.</p>
       ) : (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dl className="kv-grid gap-x-4 gap-y-1">
           {fields.map((f) => (
             <div key={f.key} className="contents" data-field={f.key}>
-              <dt className="font-mono text-muted-foreground">{f.key}</dt>
-              <dd className="font-mono whitespace-pre-wrap break-all">
+              <dt className="font-mono text-mono text-neutral-11">{f.key}</dt>
+              <dd className="font-mono text-mono text-neutral-12 whitespace-pre-wrap break-all">
                 {f.text}
                 {f.unsafeInteger && (
-                  <span className="ml-2 text-xs font-sans px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-                    unsafe integer
-                  </span>
+                  // An informational badge: a word and dot in neutral-11 (DR-017)
+                  <StatusMark tone="quiet" word="unsafe integer" className="ml-2 font-sans" />
                 )}
               </dd>
             </div>

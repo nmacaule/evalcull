@@ -24,6 +24,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { AlertText } from '../StatusMark';
 
 export interface SchemaMapperProps {
   open: boolean;
@@ -48,10 +49,10 @@ interface PathFieldProps {
 
 function PathField({ label, value, onChange, error, preview, optional }: PathFieldProps) {
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1">
       <Label htmlFor={label}>
         {label}
-        {optional && <span className="text-muted-foreground ml-1">(optional)</span>}
+        {optional && <span className="text-neutral-11 ml-1">(optional)</span>}
       </Label>
       <Input
         id={label}
@@ -60,9 +61,9 @@ function PathField({ label, value, onChange, error, preview, optional }: PathFie
         placeholder={`e.g., ${label.toLowerCase().replace(' ', '_')}`}
         aria-invalid={!!error}
       />
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <AlertText>{error}</AlertText>}
       {preview !== null && !error && (
-        <p className="text-sm text-muted-foreground truncate">
+        <p className="text-chrome text-neutral-11 truncate">
           Preview: {preview || '(empty)'}
         </p>
       )}
@@ -83,14 +84,14 @@ function RoleAssignment({ roleValues, assignments, onChange }: RoleAssignmentPro
       <div className="space-y-1">
         {roleValues.map((role) => (
           <div key={role} className="flex items-center gap-2">
-            <span className="text-sm font-mono min-w-20">{role}</span>
-            <span className="text-muted-foreground">→</span>
+            <span className="font-mono text-mono text-neutral-12 min-w-role">{role}</span>
+            <span className="text-neutral-11">→</span>
             <select
               value={assignments[role] ?? 'user'}
               onChange={(e) =>
                 onChange(role, e.target.value as 'user' | 'assistant' | 'system')
               }
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              className="rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12"
             >
               <option value="user">user</option>
               <option value="assistant">assistant</option>
@@ -343,7 +344,7 @@ export function SchemaMapper({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Every field is a native input or select, so one capture handler sees any change (D-069) */}
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto" onChangeCapture={() => onDraftChange?.()}>
+      <DialogContent className="max-w-dialog sheet-max overflow-y-auto" onChangeCapture={() => onDraftChange?.()}>
         <DialogHeader>
           <DialogTitle>Configure Record Format</DialogTitle>
           <DialogDescription>
@@ -353,13 +354,13 @@ export function SchemaMapper({
 
         <div className="space-y-4">
           {/* Shape selector */}
-          <div className="space-y-1.5">
+          <div className="flex flex-col gap-1">
             <Label htmlFor="shape">Data Shape</Label>
             <select
               id="shape"
               value={selectedShape}
               onChange={(e) => setSelectedShape(e.target.value as ShapeKind)}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              className="w-full rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12"
             >
               <option value="flat">Flat (prompt/response)</option>
               <option value="messages">Messages (conversation)</option>
@@ -399,7 +400,7 @@ export function SchemaMapper({
                 preview={messagesPathValidation.preview}
               />
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
+                <div className="flex flex-col gap-1">
                   <Label htmlFor="roleKey">Role Key</Label>
                   <Input
                     id="roleKey"
@@ -408,7 +409,7 @@ export function SchemaMapper({
                     placeholder="role"
                   />
                 </div>
-                <div className="space-y-1.5">
+                <div className="flex flex-col gap-1">
                   <Label htmlFor="contentKey">Content Key</Label>
                   <Input
                     id="contentKey"
@@ -477,17 +478,17 @@ export function SchemaMapper({
           )}
 
           {selectedShape === 'unknown' && (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-chrome text-neutral-11">
               Select a data shape above to configure the format.
             </p>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleApply} disabled={!isValid}>
+          <Button variant="primary" onClick={handleApply} disabled={!isValid}>
             Apply
           </Button>
         </DialogFooter>

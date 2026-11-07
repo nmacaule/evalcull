@@ -40,6 +40,18 @@ describe('Dropzone', () => {
     expect(loadJsonlFile.mock.calls[0][0]).toBe(f);
   });
 
+  it("puts a refused drop's message in exactly one live region while a file is open", () => {
+    render(<Dropzone loaded={true} />);
+    drop([file('notes.txt')]);
+    const message = screen.getByText('Only .jsonl files open in this version.');
+    const regions: string[] = [];
+    for (let el: HTMLElement | null = message; el; el = el.parentElement) {
+      const role = el.getAttribute('role');
+      if (role === 'status' || role === 'alert' || el.getAttribute('aria-live')) regions.push(role ?? 'aria-live');
+    }
+    expect(regions).toEqual(['alert']);
+  });
+
   it('refuses another extension and more than one file', () => {
     render(<Dropzone loaded={false} />);
     drop([file('a.csv')]);

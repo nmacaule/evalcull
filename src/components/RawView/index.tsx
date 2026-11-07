@@ -1,2 +1,2 @@
-export { RawView } from './RawView';
+export { RawView, Revealed } from './RawView';
 export type { RawViewProps } from './RawView';

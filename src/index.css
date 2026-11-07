@@ -1,13 +1,371 @@
+/*
+ * The design system: PRD §2.11 (DR-016 to DR-024). Every colour, size, spacing,
+ * radius, duration and easing the app uses is defined here and nowhere else in
+ * src/ (the ui rules; tests/design-tokens.test.ts).
+ *
+ * Colour is written as oklch() with no fallback. The README's floor is Chrome
+ * 111, Safari 16.4 and Firefox 128; CSS Color 4 §9.4 defines oklch() [S175].
+ * Firefox's support rests on Mozilla's own release notes for Firefox 113
+ * ("oklch(), and color-mix() functional notations are now supported",
+ * https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/113).
+ * Chrome's (111) and Safari's (15.4) rest on MDN's browser-compat-data, key
+ * css.types.color.oklch (https://raw.githubusercontent.com/mdn/browser-compat-data/main/css/types/color.json),
+ * because neither vendor's release post for those versions names oklch()
+ * (fetched 6 Nov 2026). Every token is inside sRGB (O3), so no browser
+ * gamut-maps it on an sRGB display [S176].
+ */
+
 @import "tailwindcss";
 
+/* Tailwind's defaults are cleared; only the §2.11 scale is defined */
 @theme {
-  --color-background: oklch(1 0 0);
-  --color-foreground: oklch(0.145 0 0);
+  --*: initial;
+
+  --font-sans: system-ui, ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+  --default-font-family: var(--font-sans);
+  --default-mono-font-family: var(--font-mono);
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --text-chrome: 13px;
+  --text-chrome--line-height: 18px;
+  --text-reading: 16px;
+  --text-reading--line-height: 24px;
+  --text-heading: 20px;
+  --text-heading--line-height: 28px;
+  --text-mono: 13px;
+  --text-mono--line-height: 20px;
+
+  /* 4 to 32 px (O8); 0 is the absence of spacing (R9) */
+  --spacing-0: 0px;
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+
+  --radius-control: 4px;
+  --radius-panel: 6px;
+  --radius-full: 9999px;
+
+  /* The content measure (O6) and the layout widths in use, each keeping its value (R10) */
+  --container-content: 70ch;
+  --container-page: 72rem;
+  --container-confirm: 56rem;
+  --container-column: 48rem;
+  --container-dialog-wide: 42rem;
+  --container-dialog: 32rem;
+  --container-panel-md: 28rem;
+  --container-dropzone: 24rem;
+  --container-goto: 20rem;
+  --container-panel: 20rem;
+  /* The header's progress track (DR-018) */
+  --container-progress: 8rem;
+  /* The score field (LabelNotesPanel) */
+  --container-score: 8rem;
+  /* The role name column of the mapping modal */
+  --container-role: 5rem;
 }
 
+/* The colour utilities read the theme-switching custom properties below */
+@theme inline {
+  --color-neutral-1: var(--neutral-1);
+  --color-neutral-2: var(--neutral-2);
+  --color-neutral-3: var(--neutral-3);
+  --color-neutral-4: var(--neutral-4);
+  --color-neutral-5: var(--neutral-5);
+  --color-neutral-6: var(--neutral-6);
+  --color-neutral-7: var(--neutral-7);
+  --color-neutral-8: var(--neutral-8);
+  --color-neutral-9: var(--neutral-9);
+  --color-neutral-10: var(--neutral-10);
+  --color-neutral-11: var(--neutral-11);
+  --color-neutral-12: var(--neutral-12);
+  --color-accent-3: var(--accent-3);
+  --color-accent-9: var(--accent-9);
+  --color-status-kept: var(--status-kept);
+  --color-status-rejected: var(--status-rejected);
+  --color-status-edited: var(--status-edited);
+  --color-status-preferred: var(--status-preferred);
+  --color-diff-insert-bg: var(--diff-insert-bg);
+  --color-diff-delete-bg: var(--diff-delete-bg);
+  --color-on-primary: var(--on-primary);
+  --color-primary-fill: var(--primary-fill);
+  --color-primary-fill-hover: var(--primary-fill-hover);
+  --color-scrim: var(--scrim);
+  --color-dialog: var(--dialog-surface);
+
+  /* Content reads the reading step (Z, O7) where it is on */
+  --text-content: var(--content-size, 14px);
+  --text-content--line-height: var(--content-line, 20px);
+}
+
+/* Light theme (§2.11 table) */
+:root {
+  color-scheme: light dark;
+
+  --neutral-1: oklch(0.99 0.003 280);
+  --neutral-2: oklch(0.975 0.004 280);
+  --neutral-3: oklch(0.95 0.005 280);
+  --neutral-4: oklch(0.92 0.006 280);
+  --neutral-5: oklch(0.89 0.007 280);
+  --neutral-6: oklch(0.85 0.008 280);
+  --neutral-7: oklch(0.78 0.009 280);
+  --neutral-8: oklch(0.68 0.01 280);
+  --neutral-9: oklch(0.56 0.01 280);
+  --neutral-10: oklch(0.51 0.01 280);
+  --neutral-11: oklch(0.42 0.01 280);
+  --neutral-12: oklch(0.2 0.01 280);
+
+  --accent-1: oklch(0.99 0.004 280);
+  --accent-2: oklch(0.975 0.011 280);
+  --accent-3: oklch(0.95 0.024 280);
+  --accent-4: oklch(0.91 0.044 280);
+  --accent-5: oklch(0.87 0.064 280);
+  --accent-6: oklch(0.82 0.091 280);
+  --accent-7: oklch(0.74 0.136 280);
+  --accent-8: oklch(0.65 0.16 280);
+  --accent-9: oklch(0.55 0.17 280);
+  --accent-10: oklch(0.5 0.17 280);
+  --accent-11: oklch(0.46 0.15 280);
+  --accent-12: oklch(0.28 0.1 280);
+
+  --status-kept: oklch(0.44 0.12 150);
+  --status-rejected: oklch(0.46 0.12 25);
+  --status-edited: oklch(0.455 0.095 75);
+  --status-preferred: oklch(0.45 0.113 245);
+
+  --diff-insert-bg: oklch(0.95 0.03 150);
+  --diff-delete-bg: oklch(0.95 0.024 25);
+
+  /* White on the primary-action fill; the fill is accent-9, hover accent-10 (O4) */
+  --on-primary: oklch(1 0 0);
+  --primary-fill: var(--accent-9);
+  --primary-fill-hover: var(--accent-10);
+
+  /* Black at 40 % behind dialogs, in both themes (O17 amended 6 Nov 2026) */
+  --scrim: oklch(0 0 0 / 0.4);
+
+  /* A dialog's surface: neutral-2 in light, neutral-3 in dark, where an elevated
+     surface is the lighter one (O18, owner 6 Nov 2026 [S214][S207][S215]) */
+  --dialog-surface: var(--neutral-2);
+
+  --duration-state: 120ms;
+  --duration-panel: 150ms;
+  --duration-modal: 200ms;
+  --ease-standard: cubic-bezier(0, 0, 0.38, 0.9);
+
+  /* The fixed storage bar (top) and drop status (bottom) a focused element scrolls
+     clear of (DR-024); FixedOverlay sets each to its overlay's measured extent, a
+     unitless number of CSS pixels */
+  --overlay-top: 0;
+  --overlay-bottom: 0;
+}
+
+/* Dark theme (§2.11 table), following the system with no toggle (O14) */
 @media (prefers-color-scheme: dark) {
-  @theme {
-    --color-background: oklch(0.145 0 0);
-    --color-foreground: oklch(0.985 0 0);
+  :root {
+    --neutral-1: oklch(0.17 0.005 280);
+    --neutral-2: oklch(0.2 0.006 280);
+    --neutral-3: oklch(0.24 0.007 280);
+    --neutral-4: oklch(0.27 0.008 280);
+    --neutral-5: oklch(0.3 0.009 280);
+    --neutral-6: oklch(0.34 0.01 280);
+    --neutral-7: oklch(0.4 0.011 280);
+    --neutral-8: oklch(0.48 0.012 280);
+    --neutral-9: oklch(0.56 0.012 280);
+    --neutral-10: oklch(0.61 0.012 280);
+    --neutral-11: oklch(0.86 0.01 280);
+    --neutral-12: oklch(0.93 0.006 280);
+
+    --accent-1: oklch(0.18 0.02 280);
+    --accent-2: oklch(0.21 0.03 280);
+    --accent-3: oklch(0.26 0.06 280);
+    --accent-4: oklch(0.3 0.08 280);
+    --accent-5: oklch(0.34 0.1 280);
+    --accent-6: oklch(0.4 0.12 280);
+    --accent-7: oklch(0.48 0.13 280);
+    --accent-8: oklch(0.57 0.14 280);
+    --accent-9: oklch(0.66 0.14 280);
+    --accent-10: oklch(0.71 0.13 280);
+    --accent-11: oklch(0.8 0.102 280);
+    --accent-12: oklch(0.92 0.039 280);
+
+    --status-kept: oklch(0.845 0.09 150);
+    --status-rejected: oklch(0.86 0.075 25);
+    --status-edited: oklch(0.86 0.09 75);
+    --status-preferred: oklch(0.85 0.079 245);
+
+    --diff-insert-bg: oklch(0.235 0.04 150);
+    --diff-delete-bg: oklch(0.235 0.04 25);
+
+    --dialog-surface: var(--neutral-3);
+
+    /* In dark the primary action is white on accent-8, hover accent-7 (O4) */
+    --primary-fill: var(--accent-8);
+    --primary-fill-hover: var(--accent-7);
   }
+}
+
+@layer base {
+  html {
+    scroll-padding-top: calc(var(--overlay-top) * 1px);
+    scroll-padding-bottom: calc(var(--overlay-bottom) * 1px);
+  }
+
+  body {
+    background-color: var(--neutral-1);
+    color: var(--neutral-12);
+    font-family: var(--font-sans);
+    font-size: var(--text-chrome);
+    line-height: var(--text-chrome--line-height);
+  }
+
+  ::placeholder {
+    color: var(--neutral-11);
+    opacity: 1;
+  }
+
+  ::selection {
+    color: var(--neutral-12);
+    background-color: var(--accent-3);
+  }
+
+  /* The ring (§2.11 Focus): 2 px accent-9 at a 2 px outset, on keyboard focus and
+     on the focused compare card, which also carries aria-current (D-007) */
+  :focus-visible,
+  [data-card-focus] {
+    outline: 2px solid var(--accent-9);
+    outline-offset: 2px;
+  }
+
+  /* Native checkboxes, radios and selects: neutral-12, so the accent keeps its three jobs (DR-020) */
+  input[type="checkbox"],
+  input[type="radio"],
+  select {
+    accent-color: var(--neutral-12);
+  }
+
+  kbd {
+    font-family: var(--font-sans);
+  }
+
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Z, the reading step: content 16 / 24 (§2.2, O7) */
+  [data-reading-step] {
+    --content-size: var(--text-reading);
+    --content-line: var(--text-reading--line-height);
+  }
+}
+
+/* Section, role and badge labels (§2.11 text-label) */
+@utility label {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* The status dot: 6 px, full radius, in its word's colour (O12) */
+@utility status-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background-color: currentColor;
+}
+
+/* State changes (hover, selection, focus move): colour and opacity only, so nothing moves */
+@utility transition-state {
+  transition-property: color, background-color, border-color, outline-color, opacity;
+  transition-duration: var(--duration-state);
+  transition-timing-function: var(--ease-standard);
+}
+
+/* The offset is the translate property, which composes with an element's own
+   transform (the dialog's centring) instead of replacing it */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* A panel or popover, 150 ms; a modal, 200 ms; its scrim fades in 200 ms. Under
+   reduced motion nothing moves: the opacity fade alone, at 120 ms (O9) */
+@utility animate-panel {
+  animation: rise-in var(--duration-panel) var(--ease-standard) both;
+  @media (prefers-reduced-motion: reduce) {
+    animation: fade-in var(--duration-state) var(--ease-standard) both;
+  }
+}
+
+@utility animate-modal {
+  animation: rise-in var(--duration-modal) var(--ease-standard) both;
+  @media (prefers-reduced-motion: reduce) {
+    animation: fade-in var(--duration-state) var(--ease-standard) both;
+  }
+}
+
+@utility animate-scrim {
+  animation: fade-in var(--duration-modal) var(--ease-standard) both;
+  @media (prefers-reduced-motion: reduce) {
+    animation: fade-in var(--duration-state) var(--ease-standard) both;
+  }
+}
+
+/* Named sizes, so no component carries an arbitrary value */
+@utility card-scroll {
+  max-height: 60vh;
+}
+
+@utility dialog-max {
+  max-height: 85vh;
+}
+
+@utility sheet-max {
+  max-height: 80vh;
+}
+
+@utility field-min {
+  min-height: 200px;
+}
+
+@utility field-min-sm {
+  min-height: 100px;
+}
+
+@utility dialog-centre {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: calc(100% - 32px);
+  transform: translate(-50%, -50%);
+}
+
+@utility kv-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
 }

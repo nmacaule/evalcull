@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { AlertText } from '../StatusMark';
 
 export interface EditorProps {
   initialValue: string;
@@ -69,15 +70,11 @@ export function Editor({ initialValue, onSave, onCancel, error, turnSwitch }: Ed
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        className="min-h-[200px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+        className="field-min w-full resize-y rounded-control border border-neutral-9 bg-neutral-1 px-3 py-2 text-content text-neutral-12"
         aria-label="Edit content"
       />
-      {error && (
-        <div className="text-sm text-destructive" role="alert">
-          {error}
-        </div>
-      )}
-      <div className="flex justify-end gap-2 text-xs text-muted-foreground">
+      {error && <AlertText>{error}</AlertText>}
+      <div className="flex justify-end gap-2 text-chrome text-neutral-11">
         {turnSwitch && (
           <span>↑ at the start or ↓ at the end switches assistant turns while the text is unchanged.</span>
         )}

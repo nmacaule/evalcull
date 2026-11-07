@@ -94,6 +94,7 @@ function TestHarness({
     redo: vi.fn(),
     toggleRaw: vi.fn(),
     toggleWhitespace: vi.fn(),
+    toggleReadingStep: vi.fn(),
     cycleFilter: vi.fn(),
     showCheatSheet: vi.fn(),
     scrollUp: vi.fn(),
@@ -386,6 +387,16 @@ describe('hotkeys', () => {
         expect(toggleWhitespace).toHaveBeenCalled();
       });
 
+      it('z fires toggleReadingStep() in both modes (PRD §2.2, O7)', () => {
+        for (const mode of ['compare', 'single'] as const) {
+          const toggleReadingStep = vi.fn();
+          const { unmount } = render(<TestHarness mode={mode} handlers={{ toggleReadingStep }} />);
+          pressKey('z');
+          expect(toggleReadingStep).toHaveBeenCalledTimes(1);
+          unmount();
+        }
+      });
+
       it('f fires cycleFilter()', () => {
         const cycleFilter = vi.fn();
         render(<TestHarness mode="single" handlers={{ cycleFilter }} />);
@@ -569,5 +580,89 @@ describe('App-level keys (WP 6b)', () => {
     expect(useReviewStore.getState().filter).toBe('unparseable');
     press('f', 'KeyF');
     expect(useReviewStore.getState().filter).toBe('all');
+  });
+});
+
+// The reading step (PRD §2.2 Z, §2.11, DR-016 O7): view state on the app root,
+// never written to the session
+describe('Z, the reading step (WP 7b)', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  // On the document root, so it reaches dialogs in their portal (O7)
+  const readingStep = () => (document.documentElement.hasAttribute('data-reading-step') ? document.documentElement : null);
+
+  it('Z toggles the reading step on the app root in compare mode', async () => {
+    const source = appSource(
+      [
+        '{"messages":[{"role":"user","content":"u"},{"role":"assistant","content":"a"}]}',
+        '{"messages":[{"role":"user","content":"u"},{"role":"assistant","content":"b"}]}',
+      ],
+      [0, 0],
+      [1, 1]
+    );
+    await loadSource(source, MESSAGES);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '1').textContent).toContain('b'));
+    expect(useReviewStore.getState().mode).toBe('compare');
+    expect(readingStep()).toBeNull();
+
+    press('z', 'KeyZ');
+    expect(readingStep()).not.toBeNull();
+    press('z', 'KeyZ');
+    expect(readingStep()).toBeNull();
+  });
+
+  it('Z toggles the reading step in single mode', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}', '{"instruction":"r","output":"b"}'], [0, 1], [1, 1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+    expect(useReviewStore.getState().mode).toBe('single');
+
+    press('z', 'KeyZ');
+    expect(readingStep()).not.toBeNull();
+    press('z', 'KeyZ');
+    expect(readingStep()).toBeNull();
+  });
+
+  it('z typed in the editor does not toggle the reading step', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+
+    press('e', 'KeyE');
+    const editor = await screen.findByLabelText('Edit content');
+    press('z', 'KeyZ', {}, editor);
+    expect(readingStep()).toBeNull();
+  });
+
+  it('Z does nothing while a dialog is open', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+
+    press('?', 'Slash', { shiftKey: true });
+    await screen.findByRole('dialog');
+    press('z', 'KeyZ');
+    expect(readingStep()).toBeNull();
+  });
+
+  it('the reading step is not written to the session', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+    const before = useReviewStore.getState().exportSession();
+
+    press('z', 'KeyZ');
+    expect(readingStep()).not.toBeNull();
+
+    expect(useReviewStore.getState()._dirty).toBe(false);
+    expect(useReviewStore.getState().exportSession()).toBe(before);
+    expect(before).not.toMatch(/reading/i);
   });
 });
