@@ -1,13 +1,16 @@
 import { test, expect } from '@playwright/test'
 import { DIST_URL } from './helpers'
 
+// WP 7c: LIVE_URL runs this spec against the deployed page instead of the file from disk
+const URL = process.env.LIVE_URL ?? DIST_URL
+
 // PRD §5 Keyboard loop (single): J/K/A/R/S/E/Mod+Enter/Esc/U/Shift+U/T/W/M/G/F;
 // typing a or r in the editor never decides; Enter inserts a newline.
 // Distinct prompts, so single mode; decisions auto-advance (WP 3 d).
 const FILE = ['{"instruction":"p0","output":"a "}', '{"instruction":"p1","output":"b"}', '{"instruction":"p2","output":"c"}'].join('\n') + '\n'
 
 test('the single-mode keyboard loop', async ({ page }) => {
-  await page.goto(DIST_URL)
+  await page.goto(URL)
   await page.getByLabel('JSONL file').setInputFiles({ name: 'keys.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(FILE) })
   const position = (n: number) => page.getByText(`Record ${n} of 3`)
   const card = page.getByRole('group').first()

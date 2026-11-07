@@ -2,7 +2,7 @@
 
 Opens any eval or training file, keyboard-first, writes back, nothing to set up.
 
-Runs in Chrome 111, Safari 16.4, Firefox 128 or newer.
+Runs in Chrome 111, Safari 16.4, Firefox 128 or newer. CI runs the single file from disk in Playwright 1.64.1's Chromium 156, WebKit 27.2 and Firefox 157 on Linux, and in its WebKit and Firefox on macOS and Windows; the file was also checked by hand from disk in Safari 26.6.2 on macOS.
 
 This first release reads JSONL: conversations (`messages`, including ShareGPT), preference pairs (`chosen` / `rejected`), multi-candidate records, and prompt/response rows. Other formats follow.
 

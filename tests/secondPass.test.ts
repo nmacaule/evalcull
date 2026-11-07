@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { secondPass } from '../src/lib/secondPass';
-import { indexBlob } from '../src/lib/indexer';
+import { indexChunks } from '../src/lib/indexer';
+import { readChunks } from '../src/lib/chunks';
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar } from '../src/store/persistence';
 import type { FileIndex, RecordFormat, RecordSource } from '../src/types';
@@ -32,7 +33,7 @@ describe('secondPass grouping', () => {
     const buffer = readFileSync(join(SHAPES_DIR, 'grouping.jsonl'));
     const blob = createBlob(buffer);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = {
       kind: 'flat',
@@ -41,7 +42,7 @@ describe('secondPass grouping', () => {
     };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -59,12 +60,12 @@ describe('secondPass grouping', () => {
     const buffer = readFileSync(join(SHAPES_DIR, 'grouping.jsonl'));
     const blob = createBlob(buffer);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = { kind: 'unknown' };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -82,7 +83,7 @@ describe('secondPass grouping', () => {
     const buffer = readFileSync(join(SHAPES_DIR, 'preference-implicit.jsonl'));
     const blob = createBlob(buffer);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = {
       kind: 'preference',
@@ -91,7 +92,7 @@ describe('secondPass grouping', () => {
     };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -114,7 +115,7 @@ describe('secondPass grouping', () => {
     const content = lines.join('\n') + '\n';
     const blob = textToBlob(content);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = {
       kind: 'preference',
@@ -124,7 +125,7 @@ describe('secondPass grouping', () => {
     };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -146,7 +147,7 @@ describe('secondPass grouping', () => {
     const content = lines.join('\n') + '\n';
     const blob = textToBlob(content);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = {
       kind: 'messages',
@@ -161,7 +162,7 @@ describe('secondPass grouping', () => {
     };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -183,7 +184,7 @@ describe('secondPass grouping', () => {
     const content = lines.join('\n') + '\n';
     const blob = textToBlob(content);
 
-    const indexResult = await indexBlob(blob);
+    const indexResult = await indexChunks(readChunks(blob), blob.size);
 
     const format: RecordFormat = {
       kind: 'flat',
@@ -192,7 +193,7 @@ describe('secondPass grouping', () => {
     };
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       indexResult.starts,
       indexResult.ends,
       indexResult.hasBom,
@@ -206,11 +207,50 @@ describe('secondPass grouping', () => {
     expect(result.groupCount).toBe(2);
   });
 
+  // WP 7c (DR-025): the page's reads can split a BOM, a CR LF or a line anywhere
+  it.each([1, 2, 3])('groups a BOM and CRLF file read in %i-byte chunks', async (size) => {
+    // BOM, then {"p":"A"} CR LF, not json LF, {"p":"A"} LF, {"p":"B"} with no newline
+    const bytes = Uint8Array.from([
+      0xef, 0xbb, 0xbf,
+      ...new TextEncoder().encode('{"p":"A"}\r\nnot json\n{"p":"A"}\n{"p":"B"}'),
+    ]);
+    const blob = createBlob(bytes);
+    const format: RecordFormat = { kind: 'flat', promptPath: 'p', responsePath: 'p' };
+
+    const indexResult = await indexChunks(readChunks(blob, size), blob.size);
+    const result = await secondPass(
+      readChunks(blob, size),
+      indexResult.starts,
+      indexResult.ends,
+      indexResult.hasBom,
+      format
+    );
+
+    expect({
+      hasBom: indexResult.hasBom,
+      starts: Array.from(indexResult.starts),
+      ends: Array.from(indexResult.ends),
+      eols: Array.from(indexResult.eols),
+      groups: Array.from(result.groups),
+      groupCount: result.groupCount,
+      unparseable: Array.from(result.unparseable),
+    }).toEqual({
+      hasBom: true,
+      starts: [0, 14, 23, 33],
+      ends: [12, 22, 32, 42],
+      eols: [2, 1, 1, 0],
+      // A, then the unparseable line alone, A again, then B
+      groups: [0, 1, 0, 2],
+      groupCount: 3,
+      unparseable: [1],
+    });
+  });
+
   it('handles empty file', async () => {
     const blob = textToBlob('');
 
     const result = await secondPass(
-      blob,
+      readChunks(blob),
       new Float64Array(0),
       new Float64Array(0),
       false,
@@ -228,9 +268,9 @@ describe('secondPass grouping', () => {
 // -----------------------------------------------------------------------------
 
 async function candidatesFor(blob: Blob, format: RecordFormat): Promise<number[]> {
-  const indexResult = await indexBlob(blob);
+  const indexResult = await indexChunks(readChunks(blob), blob.size);
   const result = await secondPass(
-    blob,
+    readChunks(blob),
     indexResult.starts,
     indexResult.ends,
     indexResult.hasBom,
@@ -306,8 +346,8 @@ describe('secondPass candidates per line (WP 6c)', () => {
     const bytes = readFileSync(join(SHAPES_DIR, 'candidates.jsonl'));
     const blob = createBlob(bytes);
     const format = declaredFormat('candidates');
-    const first = await indexBlob(blob);
-    const second = await secondPass(blob, first.starts, first.ends, first.hasBom, format);
+    const first = await indexChunks(readChunks(blob), blob.size);
+    const second = await secondPass(readChunks(blob), first.starts, first.ends, first.hasBom, format);
     const index: FileIndex = {
       fingerprint: 'candidates-fp',
       lineCount: first.lineCount,

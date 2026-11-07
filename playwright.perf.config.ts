@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test'
+import { defineConfig, devices } from '@playwright/test'
 import base from './playwright.config'
 
 // npm run e2e:perf: only the @perf measurements (WP 7, Q6). grepInvert must be
@@ -11,4 +11,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 15 * 60 * 1000,
+  // M1 and M3 in WebKit too (WP 7c); the CDP measurements skip themselves outside Chromium
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+  ],
 })

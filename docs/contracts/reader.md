@@ -29,7 +29,7 @@ JSONL is byte-indexed (byte-exact export possible). Everything else is row-mater
 
 | Container | Reader | Export promise |
 |-----------|--------|----------------|
-| .jsonl | Byte-offset index in Web Worker | Byte-exact for unedited lines |
+| .jsonl | Byte-offset index in a Web Worker, from bytes the page reads and transfers (PRD v3.5 §3.4, DR-025) | Byte-exact for unedited lines |
 | .json array | Native JSON, materialised rows | Re-serialised as JSONL |
 | .csv | papaparse, materialised rows | Re-serialised as JSONL |
 | .parquet | hyparquet, row groups on demand | Re-serialised as JSONL |
