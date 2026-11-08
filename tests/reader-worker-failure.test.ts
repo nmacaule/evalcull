@@ -239,9 +239,18 @@ function track<T>(p: Promise<T>): Tracked<T> {
   return t;
 }
 
-/** Unfaked macrotask turns with fake time advancing; ends when until() holds or the budget is spent. */
+// Captured before any test installs the fake timers, for work that takes real time (D-116)
+const realSetTimeout = globalThis.setTimeout;
+
+// Bounded by real time, not by a count of turns: 600 turns last about 15 ms, less than a Blob read or a
+// digest can take on a loaded runner (D-116). 4,000 ms stays under the 5 s test timeout, so a hang still
+// ends as a failed assertion; performance is not faked here
+const SETTLE_DEADLINE_MS = 4_000;
+
+/** Unfaked macrotask turns with fake time advancing; ends when until() holds or the real-time deadline passes. */
 async function settle(until: () => boolean): Promise<void> {
-  for (let turn = 1; turn <= 600 && !until(); turn++) {
+  const deadline = performance.now() + SETTLE_DEADLINE_MS;
+  for (let turn = 1; !until() && performance.now() < deadline; turn++) {
     await new Promise((r) => setImmediate(r));
     if (turn % 10 === 0) await vi.advanceTimersByTimeAsync(1_000);
   }
@@ -286,6 +295,17 @@ describe('the reader with the real worker handler', () => {
     const read = track(readJsonl(file, 'two.jsonl', file.size, 0, { format: { kind: 'unknown' } }));
     await settle(() => read.state !== 'pending');
     expect(read.state).toBe('rejected');
+  });
+
+  // D-116: the wait is bounded by real time, so work that outlasts a count of turns on a slow
+  // runner (a Blob read on a busy thread pool) is still seen to settle
+  it('settle sees work that settles after 100 ms of real time (D-116)', async () => {
+    let done = false;
+    realSetTimeout(() => {
+      done = true;
+    }, 100);
+    await settle(() => done);
+    expect(done).toBe(true);
   });
 
   it('a begin the worker cannot read rejects the read (D-109)', async () => {

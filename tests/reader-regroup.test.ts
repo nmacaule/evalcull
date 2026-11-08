@@ -127,17 +127,42 @@ describe('readJsonl regroup', () => {
   it('keeps at most two chunks in flight until the worker takes them', async () => {
     // 9 MiB: chunks of 4, 4 and 1 MiB
     const file = new Blob([new Uint8Array(9 * 1024 * 1024)]);
+    // Every slice the reader makes and the read of it (D-117): the reader slices before it awaits a read
+    const reads: Promise<ArrayBuffer>[] = [];
+    const slice = file.slice.bind(file);
+    file.slice = (...args: Parameters<Blob['slice']>) => {
+      const part = slice(...args);
+      const read = part.arrayBuffer.bind(part);
+      part.arrayBuffer = () => {
+        const p = read();
+        reads.push(p);
+        return p;
+      };
+      return part;
+    };
     fake.withholdAcks = true;
     const reading = readJsonl(file, 'zeros.jsonl', file.size, 0, { format: { kind: 'unknown' } });
     await posted((m) => m.type === 'chunk' && fake.posted.filter((c) => c.type === 'chunk').length === 2);
-    // Turns enough for a third read and post, if the bound did not hold
-    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    // Until every read the reader has started has finished and the turns after it have run, so a chunk
+    // it could post while two are held is posted, however slow the reads (D-117: a fixed count of turns
+    // passed before a slow third read could show, and a deadline here would be a sleep)
+    for (let started = -1; started !== reads.length; ) {
+      started = reads.length;
+      await Promise.allSettled(reads);
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    }
     const whileHeld = fake.posted.filter((m) => m.type === 'chunk').length;
+    const slicesWhileHeld = reads.length;
 
     fake.withholdAcks = false;
     for (const ack of fake.heldAcks.splice(0)) ack();
     await reading;
 
-    expect({ whileHeld, total: fake.posted.filter((m) => m.type === 'chunk').length }).toEqual({ whileHeld: 2, total: 6 });
+    // Two chunks posted while held, and one more read ahead (src/lib/chunks.ts reads before the bound is checked)
+    expect({ whileHeld, slicesWhileHeld, total: fake.posted.filter((m) => m.type === 'chunk').length }).toEqual({
+      whileHeld: 2,
+      slicesWhileHeld: 3,
+      total: 6,
+    });
   });
 });
