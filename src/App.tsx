@@ -19,6 +19,10 @@ import { SingleView } from './components/SingleView';
 import { Editor } from './components/Editor';
 import { EditConfirmView } from './components/EditConfirmView';
 import { CheatSheet } from './components/CheatSheet';
+import { Keycap } from './components/Keycap';
+import { ActionBar } from './components/ActionBar';
+import { FirstUseHint } from './components/FirstUseHint';
+import { readCharacterKeys, writeCharacterKeys, hintSeen, markHintSeen } from './lib/preferences';
 import { SchemaMapper } from './components/SchemaMapper';
 import { PromptHeader } from './components/PromptHeader';
 import { Button } from '@/components/ui/button';
@@ -116,7 +120,20 @@ function heldFor(held: HeldRecord | null, fingerprint: string, ref: CandidateRef
   return held.fingerprint === fingerprint && held.line === parseRefLine(ref) ? held : null;
 }
 
-function App() {
+// First-use hints (DR-030 as amended): with single-key shortcuts off, only keys that stay on are named
+const HINTS: Record<string, (characterKeys: boolean) => string> = {
+  compare: (on) =>
+    on
+      ? 'Which response is better? Press ← or →, or use the buttons below. = if both are good, X if both are bad.'
+      : 'Which response is better? Press ← or →, or use the buttons below. Tie if both are good, Both bad if both are bad.',
+  round2: () => 'The response you preferred stays as Winner so far and meets the next one.',
+  single: (on) =>
+    on
+      ? 'Keep, reject or skip each record with A, R or S, or the buttons below.'
+      : 'Keep, reject or skip each record with the buttons below.',
+};
+
+function Review({ onAnnounce }: { onAnnounce: (text: string) => void }) {
   // Store state
   const source = useReviewStore((s) => s.source);
   const format = useReviewStore((s) => s.format);
@@ -139,6 +156,9 @@ function App() {
   const setFilter = useReviewStore((s) => s.setFilter);
   const setFormat = useReviewStore((s) => s.setFormat);
   const record = useReviewStore((s) => s.record);
+  const session = useReviewStore((s) => s.session);
+  const past = useReviewStore((s) => s.past);
+  const firstUnreviewed = useReviewStore((s) => s.firstUnreviewed);
 
   // Local UI state
   const [showRaw, setShowRaw] = useState(false);
@@ -153,6 +173,12 @@ function App() {
     return () => root.removeAttribute('data-reading-step');
   }, [readingStep]);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
+  // Single-key shortcuts on or off (DR-029, WCAG 2.2 SC 2.1.4), a browser preference read once at start
+  const [characterKeys, setCharacterKeysState] = useState(readCharacterKeys);
+  const setCharacterKeys = useCallback((on: boolean) => {
+    setCharacterKeysState(on);
+    writeCharacterKeys(on);
+  }, []);
   const [schemaMapperOpen, setSchemaMapperOpen] = useState(false);
   // The mapping modal holds a draft only once the user has changed a field (DR-001 rule 6, D-069)
   const [mapperDraft, setMapperDraft] = useState(false);
@@ -257,6 +283,95 @@ function App() {
         ? (knockout?.shown?.left ?? prompt.candidates[0] ?? prompt.promptRef)
         : '';
   const rightRef: CandidateRef = !singleCard && knockout?.shown ? knockout.shown.right : '';
+
+  // Candidates named in words, by their place in the prompt or the record's line counted from 1 (DR-032)
+  const responseNumber = (ref: CandidateRef) => Math.max(prompt?.candidates.indexOf(ref) ?? 0, 0) + 1;
+  const titleOf = (ref: CandidateRef) =>
+    mode === 'compare' ? `Response ${responseNumber(ref)}` : `Record ${parseRefLine(ref) + 1}`;
+  const subjectOf = (ref: CandidateRef) =>
+    mode === 'compare' ? `response ${responseNumber(ref)} of prompt ${cursor + 1}` : `record ${parseRefLine(ref) + 1}`;
+
+  // The resume line, once per reopened file with a saved session (DR-034): shown under the
+  // header as ordinary content, and announced through the shell's hidden status region,
+  // which is there, empty, from the first render. The next decision or undo, or Dismiss, clears both
+  const [resumeText, setResumeTextState] = useState('');
+  const setResumeText = useCallback(
+    (text: string) => {
+      setResumeTextState(text);
+      onAnnounce(text);
+    },
+    [onAnnounce]
+  );
+  const resumedFor = useRef<string | null>(null);
+  const pastAtResume = useRef<number | null>(null);
+  useEffect(() => {
+    if (!source || source.kind !== 'jsonl' || resumedFor.current === fingerprint) return;
+    resumedFor.current = fingerprint;
+    if (session.kind !== 'restored') {
+      pastAtResume.current = null;
+      setResumeText('');
+      return;
+    }
+    const total = mode === 'compare' ? source.index.groupCount : source.index.lineCount;
+    const unit = mode === 'compare' ? 'prompt' : 'record';
+    const comparison =
+      mode === 'compare' && candidateCount > 2 && knockout?.shown
+        ? `, comparison ${knockout.shown.pair + 1} of ${knockout.totalPairs}`
+        : '';
+    pastAtResume.current = past.length;
+    setResumeText(
+      `Resumed where you left off: ${unit} ${cursor + 1} of ${total}${comparison}. ${counts().reviewed} of ${total} ${unit}s done.`
+    );
+  }, [source, fingerprint, session.kind, mode, candidateCount, knockout, past.length, cursor, counts, setResumeText]);
+  useEffect(() => {
+    if (pastAtResume.current !== null && past.length !== pastAtResume.current) {
+      pastAtResume.current = null;
+      setResumeText('');
+    }
+  }, [past.length, setResumeText]);
+
+  // First-use hints, each shown once per browser (DR-030)
+  const [hintsGone, setHintsGone] = useState<string[]>([]);
+  const dismissHint = useCallback((id: string) => {
+    markHintSeen(id);
+    setHintsGone((gone) => (gone.includes(id) ? gone : [...gone, id]));
+  }, []);
+  const hintId: string | null = !source
+    ? null
+    : mode === 'single'
+      ? 'single'
+      : !singleCard && knockout?.shown
+        ? knockout.shown.pair === 0
+          ? 'compare'
+          : 'round2'
+        : null;
+  const hint = hintId && !hintsGone.includes(hintId) && !hintSeen(hintId) ? hintId : null;
+  // A hint goes the moment its action happens: a judgement for the compare hints, A/R/S for single
+  // The hint on screen before the action, since a judgement can move the prompt to the next round
+  const pastSeen = useRef(past.length);
+  const shownHint = useRef<string | null>(null);
+  useEffect(() => {
+    const before = shownHint.current;
+    if (past.length > pastSeen.current && before) {
+      const last = past[past.length - 1];
+      if ((before !== 'single' && last?.type === 'compare') || (before === 'single' && last?.type === 'status')) {
+        dismissHint(before);
+      }
+    }
+    pastSeen.current = past.length;
+    shownHint.current = hint;
+  }, [past, hint, dismissHint]);
+
+  // The strength of the pair the most recent compare action judged, the pair Shift+1–3 act on
+  let lastStrength: 1 | 2 | 3 | undefined | null = null;
+  if (mode === 'compare') {
+    for (let i = past.length - 1; i >= 0; i--) {
+      const action = past[i];
+      if (action.type !== 'compare') continue;
+      lastStrength = decisions.get(action.ref)?.compare?.[action.pair]?.strength;
+      break;
+    }
+  }
 
   // A held record counts as loaded only for the file and line it was read for, so
   // neither the cards nor the editor use the previous one while a line loads (D-083, D-084)
@@ -587,6 +702,7 @@ function App() {
     openSearch: () => setSearchOpen(true),
     mode,
     groupSize,
+    characterKeys,
     // The search bar is not modal: keys typed in its field are form keys, and
     // J/K stay live so a slow search can be left (its generation goes stale)
     // The editor and its confirmation count as modal: single keys do nothing
@@ -696,10 +812,10 @@ function App() {
       <div data-screen="editor" className="min-h-screen bg-neutral-1 text-neutral-12 p-8">
         <div className="max-w-column mx-auto">
           <h2 className="text-heading font-semibold mb-4">
-            Editing {editing.ref}
+            Editing {subjectOf(editing.ref)}
           </h2>
           <p className="text-chrome text-neutral-11 mb-4">
-            Path: <code className="font-mono text-mono">{editing.path}</code>
+            Field: <code className="font-mono text-mono">{editing.path}</code>
           </p>
           <Editor
             key={`${editing.ref} ${editing.path}`}
@@ -745,10 +861,10 @@ function App() {
           <span className="text-neutral-12">{sourceName}</span>
           <ProgressBar counts={counts()} mode={mode} />
           <StorageIndicator state={storageState} blockedReason={draftReason} />
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-neutral-11">
-              Filter: {filter}
-            </span>
+          {/* The current filter is named on the action region's Filter button (owner, 7 Nov 2026).
+              The buttons wrap as one group, right-aligned; the group wraps inside itself only when
+              it alone is wider than the row, as at 320 CSS px (SC 1.4.10; owner, 8 Nov 2026) */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             <Button
               variant="secondary"
               size="sm"
@@ -760,9 +876,31 @@ function App() {
             <Button variant="secondary" size="sm" onClick={() => setExportOpen(true)}>
               Export
             </Button>
+            {/* The keyboard shortcuts list from a visible control (DR-033); ? only while single keys are on */}
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-keyshortcuts={characterKeys ? '?' : undefined}
+              onClick={() => setCheatSheetOpen(true)}
+            >
+              Keyboard shortcuts
+              {characterKeys && <Keycap>?</Keycap>}
+            </Button>
           </div>
         </div>
         {lastError && <AlertText className="mt-1">{lastError}</AlertText>}
+        {/* The resume line (§2.11 screen 2, DR-034): ordinary content; the shell's hidden status region announces it */}
+        {resumeText && (
+          <div data-resume-line className="mt-1 flex flex-wrap items-center gap-2 text-neutral-11">
+            <span>{resumeText}</span>
+            <Button variant="secondary" size="sm" onClick={firstUnreviewed}>
+              Go to first unreviewed
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setResumeText('')}>
+              Dismiss
+            </Button>
+          </div>
+        )}
       </header>
 
       {searchOpen && <SearchBar onClose={() => setSearchOpen(false)} />}
@@ -771,6 +909,7 @@ function App() {
       <main className="p-4">
         <div className="max-w-page mx-auto">
           <PromptHeader record={leftRecord} format={format} showWhitespace={showWhitespace} />
+          {hint && <FirstUseHint text={HINTS[hint](characterKeys)} onDismiss={() => dismissHint(hint)} />}
         </div>
         {mode === 'compare' ? (
           leftRecord && (singleCard || rightRecord) ? (
@@ -790,6 +929,7 @@ function App() {
                   edits={leftEdits}
                   onEdit={(path) => handleCardEdit(leftRef, path)}
                   status={decisions.get(leftRef)?.status}
+                  title={titleOf(leftRef)}
                 />
               </div>
             ) : (
@@ -811,6 +951,8 @@ function App() {
                 onEdit={handleCardEdit}
                 leftStatus={decisions.get(leftRef)?.status}
                 rightStatus={decisions.get(rightRef)?.status}
+                leftTitle={titleOf(leftRef)}
+                rightTitle={titleOf(rightRef)}
               />
             )
           ) : (
@@ -827,10 +969,40 @@ function App() {
             edits={leftEdits}
             onEdit={(path) => handleCardEdit(leftRef, path)}
             status={decisions.get(leftRef)?.status}
+            title={titleOf(leftRef)}
           />
         ) : (
           <div className="text-center text-chrome text-neutral-11">Loading...</div>
         )}
+
+        {/* Every action as a visible control (DR-028), below the cards */}
+        <div className="max-w-page mx-auto">
+          <ActionBar
+            mode={mode}
+            groupSize={groupSize}
+            rawToggle={format.kind !== 'unknown'}
+            characterKeys={characterKeys}
+            strength={lastStrength}
+            prefer={prefer}
+            setStrength={setStrength}
+            decide={(status) => decide(getFocusedRef(), status)}
+            openEditor={openEditor}
+            undo={undo}
+            redo={redo}
+            next={next}
+            prev={prev}
+            toggleRaw={() => setShowRaw((v) => !v)}
+            toggleWhitespace={() => setShowWhitespace((v) => !v)}
+            toggleReadingStep={() => setReadingStep((v) => !v)}
+            filter={filter}
+            cycleFilter={cycleFilter}
+            toggleMetadata={() => setMetadataOpen((v) => !v)}
+            openLabels={() => setLabelNotes('labels')}
+            openNotes={() => setLabelNotes('notes')}
+            openGoTo={() => setGoToOpen(true)}
+            openSearch={() => setSearchOpen(true)}
+          />
+        </div>
 
         {/* Navigation info */}
         <div className="mt-4 text-center text-chrome text-neutral-11" data-numeric>
@@ -844,6 +1016,7 @@ function App() {
             <MetadataPanel
               record={!singleCard && focus === 1 ? rightRecord : leftRecord}
               format={format}
+              candidateRef={getFocusedRef()}
             />
           </div>
         )}
@@ -854,6 +1027,7 @@ function App() {
         open={labelNotes !== null}
         onOpenChange={(open) => !open && setLabelNotes(null)}
         candidateRef={getFocusedRef()}
+        subject={subjectOf(getFocusedRef())}
         focusField={labelNotes ?? 'labels'}
       />
       <GoToDialog
@@ -863,7 +1037,12 @@ function App() {
         total={mode === 'compare' ? source.index.groupCount : source.index.lineCount}
       />
       {/* Cheat sheet dialog */}
-      <CheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
+      <CheatSheet
+        open={cheatSheetOpen}
+        onOpenChange={setCheatSheetOpen}
+        characterKeys={characterKeys}
+        onCharacterKeysChange={setCharacterKeys}
+      />
 
       {/* Schema mapper dialog, a fresh copy per file so its fields start from that file's format (D-044) */}
       <SchemaMapper
@@ -877,6 +1056,23 @@ function App() {
       />
     </div>,
     false
+  );
+}
+
+/**
+ * The app shell. Its visually hidden status region is in the page, empty, from the first
+ * render, so a sentence put into it later is announced; text already present when a live
+ * region appears is not (DR-034, S265, S266). Only the resume sentence goes into it.
+ */
+function App() {
+  const [announcement, setAnnouncement] = useState('');
+  return (
+    <>
+      <div role="status" className="sr-only" data-resume-status>
+        {announcement}
+      </div>
+      <Review onAnnounce={setAnnouncement} />
+    </>
   );
 }
 

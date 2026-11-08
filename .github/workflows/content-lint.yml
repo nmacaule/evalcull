@@ -74,7 +74,7 @@ jobs:
           if node -e "process.exit(require('./package.json').scripts?.['build:single'] ? 0 : 1)"; then
             npm ci
             npm run build:single
-            find dist -type f -print0 | xargs -0 scripts/content-lint files
+            find dist-single -type f -print0 | xargs -0 scripts/content-lint files
           fi
 
       - name: Full history (weekly and on demand)

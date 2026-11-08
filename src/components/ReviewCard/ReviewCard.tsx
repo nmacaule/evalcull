@@ -2,7 +2,7 @@
  * Shared card component rendering one candidate.
  * WP 6a: Shows status badge, edit indicator, supports raw/rendered view.
  * WP 6c: Renders the candidate its ref names (i:k for in-record formats) and an
- * optional badge such as "current best".
+ * optional badge such as "Winner so far".
  * WP 6b: Shows the edited values (D-014), non-strings through lossless-json
  * (D-015), the candidate's status (D-016) and W's whitespace reveal (D-025).
  * WP 7b (PRD §2.11 screens 3 and 4): the card sits on neutral-2, and a focused
@@ -44,8 +44,10 @@ export interface ReviewCardProps {
   /** Edits from decisions map */
   edits?: Record<string, EditValue>;
   onEdit?: (path: string) => void;
-  /** Optional header badge, e.g. "current best" on a knockout incumbent */
+  /** Optional header badge, e.g. "Winner so far" on a knockout incumbent */
   badge?: string;
+  /** The card's title, "Response k" or "Record n" (DR-032); the ref otherwise */
+  title?: string;
   /** The candidate's status; kept, rejected and skipped are badged (D-016) */
   status?: DecisionStatus;
   /** The judged pair's mark on this card: preferred, tie or both bad (§2.11 screen 3) */
@@ -168,13 +170,11 @@ function ContentRenderer({
       );
     }
 
+    // An Other (unknown-format) record is always shown raw, so this branch renders nothing
+    // (owner, 7 Nov 2026, D-113 not a defect; WP 6a decision d amended)
     case 'unknown':
     default:
-      return (
-        <div className="text-chrome text-neutral-11">
-          Unknown format - use raw view
-        </div>
-      );
+      return null;
   }
 }
 
@@ -189,6 +189,7 @@ export function ReviewCard({
   edits,
   onEdit,
   badge,
+  title,
   status,
   preference,
   compare = false,
@@ -234,10 +235,16 @@ export function ReviewCard({
       data-candidate-ref={candidateRef}
     >
       {/* Header: the badge and ref at the left, the marks at the top right */}
-      <div className="flex items-center gap-2">
+      {/* Wraps in a narrow card, the marks staying at the right (SC 1.4.10, D-115) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* The title in words, then the badge (§2.11 screen 3, DR-032); the ref is in the metadata panel */}
+        {title ? (
+          <span className="label text-neutral-11">{title}</span>
+        ) : (
+          <span className="font-mono text-mono text-neutral-11">{candidateRef}</span>
+        )}
         {badge && <span className="label text-neutral-11">{badge}</span>}
-        <span className="font-mono text-mono text-neutral-11">{candidateRef}</span>
-        <span className="ml-auto flex items-center gap-3">
+        <span className="ml-auto flex flex-wrap items-center justify-end gap-3">
           {preference && (
             <StatusMark tone={preference === 'preferred' ? 'preferred' : 'quiet'} word={preference} />
           )}

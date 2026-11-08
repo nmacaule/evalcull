@@ -1,7 +1,13 @@
 import { defineConfig, devices } from '@playwright/test'
+import { assertSingleFile } from './e2e/single-file-guard'
 
-// The specs plan.md WP 7c runs in WebKit and Firefox (§5 CSP, Privacy, Compare loop, Keyboard loop)
-const CROSS_ENGINE = /(single-file|kept-bytes|compare-loop|keyboard-loop)\.spec\.ts$/
+// Stops the run at once unless dist-single/index.html is the single file (DR-037, D-112). At config
+// load, before Playwright starts the webServer, which it does before any globalSetup
+assertSingleFile()
+
+// The specs plan.md WP 7c runs in WebKit and Firefox (§5 CSP, Privacy, Compare loop, Keyboard loop);
+// WP 7d: the visible-control walk in all three engines too
+const CROSS_ENGINE = /(single-file|kept-bytes|compare-loop|keyboard-loop|learnability)\.spec\.ts$/
 
 export default defineConfig({
   testDir: './e2e',
@@ -24,7 +30,8 @@ export default defineConfig({
     { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testMatch: CROSS_ENGINE },
   ],
   webServer: {
-    command: 'npm run preview',
+    // The single file over http, as CI has served it (DR-037)
+    command: 'npm run preview -- --outDir dist-single',
     url: 'http://localhost:4173',
     reuseExistingServer: !process.env.CI,
   },

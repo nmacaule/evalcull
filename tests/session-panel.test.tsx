@@ -29,7 +29,9 @@ const twoPrompts = () =>
     { fingerprint: 'abc123' }
   );
 
-const status = () => screen.getByRole('status').textContent;
+// The storage indicator's status, not the shell's hidden resume region (DR-034; owner-approved locator, 7 Nov 2026)
+const status = () =>
+  screen.getAllByRole('status').find((el) => !el.hasAttribute('data-resume-status'))!.textContent;
 // A failed save, storage off and changes not saved are errors, announced as an alert (DR-017)
 const alert = () => screen.getByRole('alert').textContent;
 

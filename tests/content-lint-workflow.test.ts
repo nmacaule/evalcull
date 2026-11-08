@@ -48,6 +48,6 @@ describe('content-lint workflow', () => {
     expect(step).not.toMatch(/if\s+npm run[^\n]*build:single/);
 
     // Every file under dist is passed to the scanner, directories included
-    expect(step).toContain('find dist -type f -print0 | xargs -0 scripts/content-lint files');
+    expect(step).toContain('find dist-single -type f -print0 | xargs -0 scripts/content-lint files');
   });
 });

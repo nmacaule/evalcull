@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { AlertText } from '../StatusMark';
+import { countPhrase } from '../../lib/plural';
 
 export interface SchemaMapperProps {
   open: boolean;
@@ -45,9 +46,11 @@ interface PathFieldProps {
   error: string | null;
   preview: string | null;
   optional?: boolean;
+  /** The input's example: real field names the detector reads (DR-032 amendment, src/lib/schema.ts) */
+  placeholder: string;
 }
 
-function PathField({ label, value, onChange, error, preview, optional }: PathFieldProps) {
+function PathField({ label, value, onChange, error, preview, optional, placeholder }: PathFieldProps) {
   return (
     <div className="flex flex-col gap-1">
       <Label htmlFor={label}>
@@ -58,7 +61,7 @@ function PathField({ label, value, onChange, error, preview, optional }: PathFie
         id={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={`e.g., ${label.toLowerCase().replace(' ', '_')}`}
+        placeholder={placeholder}
         aria-invalid={!!error}
       />
       {error && <AlertText>{error}</AlertText>}
@@ -193,7 +196,7 @@ export function SchemaMapper({
 
   // Validation
   const validatePath = useCallback(
-    (path: string, allowEmpty: boolean = false): { error: string | null; preview: string | null } => {
+    (path: string, allowEmpty: boolean = false, responses: boolean = false): { error: string | null; preview: string | null } => {
       if (!path && allowEmpty) return { error: null, preview: null };
       if (!path) return { error: 'Path is required', preview: null };
 
@@ -209,7 +212,11 @@ export function SchemaMapper({
           return { error: null, preview: value.slice(0, 100) };
         }
         if (Array.isArray(value)) {
-          return { error: null, preview: `[${value.length} items]` };
+          // The responses field counts responses; any other array counts items (DR-032 amendment)
+          return {
+            error: null,
+            preview: responses ? countPhrase(value.length, 'response', 'responses') : countPhrase(value.length, 'item', 'items'),
+          };
         }
         // Samples are lossless-json values, so numbers preview as written (D-082)
         return { error: null, preview: displayValue(value).slice(0, 100) };
@@ -226,7 +233,7 @@ export function SchemaMapper({
   const messagesPathValidation = validatePath(messagesPath);
   const chosenPathValidation = validatePath(chosenPath);
   const rejectedPathValidation = validatePath(rejectedPath);
-  const candidatesPathValidation = validatePath(candidatesPath);
+  const candidatesPathValidation = validatePath(candidatesPath, false, true);
 
   // Check if form is valid
   const isValid = useMemo(() => {
@@ -346,27 +353,27 @@ export function SchemaMapper({
       {/* Every field is a native input or select, so one capture handler sees any change (D-069) */}
       <DialogContent className="max-w-dialog sheet-max overflow-y-auto" onChangeCapture={() => onDraftChange?.()}>
         <DialogHeader>
-          <DialogTitle>Configure Record Format</DialogTitle>
+          <DialogTitle>How to read this file</DialogTitle>
           <DialogDescription>
-            Select the shape of your data and configure the paths to extract prompts and responses.
+            Tell evalcull which fields hold the prompt and the responses.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           {/* Shape selector */}
           <div className="flex flex-col gap-1">
-            <Label htmlFor="shape">Data Shape</Label>
+            <Label htmlFor="shape">Record type</Label>
             <select
               id="shape"
               value={selectedShape}
               onChange={(e) => setSelectedShape(e.target.value as ShapeKind)}
               className="w-full rounded-control border border-neutral-9 bg-neutral-1 px-2 py-1 text-chrome text-neutral-12"
             >
-              <option value="flat">Flat (prompt/response)</option>
-              <option value="messages">Messages (conversation)</option>
-              <option value="preference">Preference (chosen/rejected)</option>
-              <option value="candidates">Candidates (multiple responses)</option>
-              <option value="unknown">Unknown</option>
+              <option value="flat">Prompt-completion (a prompt and a response field)</option>
+              <option value="messages">Conversational (one list of turns)</option>
+              <option value="preference">Preference (chosen, rejected; prompt optional)</option>
+              <option value="candidates">Candidates (a prompt and a list of responses)</option>
+              <option value="unknown">Other (raw view, no grouping)</option>
             </select>
           </div>
 
@@ -374,14 +381,16 @@ export function SchemaMapper({
           {selectedShape === 'flat' && (
             <>
               <PathField
-                label="Prompt Path"
+                label="Prompt field"
+                placeholder="e.g. prompt or instruction"
                 value={promptPath}
                 onChange={setPromptPath}
                 error={promptPathValidation.error}
                 preview={promptPathValidation.preview}
               />
               <PathField
-                label="Response Path"
+                label="Response field"
+                placeholder="e.g. response or output"
                 value={responsePath}
                 onChange={setResponsePath}
                 error={responsePathValidation.error}
@@ -393,7 +402,8 @@ export function SchemaMapper({
           {selectedShape === 'messages' && (
             <>
               <PathField
-                label="Messages Path"
+                label="Messages field"
+                placeholder="e.g. messages or conversations"
                 value={messagesPath}
                 onChange={setMessagesPath}
                 error={messagesPathValidation.error}
@@ -434,7 +444,8 @@ export function SchemaMapper({
           {selectedShape === 'preference' && (
             <>
               <PathField
-                label="Prompt Path"
+                label="Prompt field"
+                placeholder="e.g. prompt or instruction"
                 value={promptPath}
                 onChange={setPromptPath}
                 error={promptPathValidation.error}
@@ -442,14 +453,16 @@ export function SchemaMapper({
                 optional
               />
               <PathField
-                label="Chosen Path"
+                label="Chosen field"
+                placeholder="e.g. chosen"
                 value={chosenPath}
                 onChange={setChosenPath}
                 error={chosenPathValidation.error}
                 preview={chosenPathValidation.preview}
               />
               <PathField
-                label="Rejected Path"
+                label="Rejected field"
+                placeholder="e.g. rejected"
                 value={rejectedPath}
                 onChange={setRejectedPath}
                 error={rejectedPathValidation.error}
@@ -461,14 +474,16 @@ export function SchemaMapper({
           {selectedShape === 'candidates' && (
             <>
               <PathField
-                label="Prompt Path"
+                label="Prompt field"
+                placeholder="e.g. prompt or instruction"
                 value={promptPath}
                 onChange={setPromptPath}
                 error={promptPathValidation.error}
                 preview={promptPathValidation.preview}
               />
               <PathField
-                label="Candidates Path"
+                label="Responses field"
+                placeholder="e.g. responses or candidates"
                 value={candidatesPath}
                 onChange={setCandidatesPath}
                 error={candidatesPathValidation.error}

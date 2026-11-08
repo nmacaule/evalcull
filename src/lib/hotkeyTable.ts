@@ -327,3 +327,14 @@ export function getHotkeysForMode(mode: 'compare' | 'single'): HotkeyEntry[] {
     (entry) => entry.modes.includes(mode) || entry.modes.includes('both')
   );
 }
+
+/**
+ * The table's keys that are not character keys under WCAG 2.2 SC 2.1.4, spelled as the
+ * entries above spell them: the single-key switch leaves these on (DR-029)
+ */
+const NON_CHARACTER_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab', 'Escape', 'mod+enter']);
+
+/** Whether a HOTKEY_TABLE key relies on a printable character, so the single-key switch turns it off (DR-029) */
+export function isCharacterKey(key: string): boolean {
+  return !NON_CHARACTER_KEYS.has(key);
+}

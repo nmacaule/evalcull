@@ -3,8 +3,12 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Download, Page } from '@playwright/test'
 
+import { SINGLE_FILE } from './single-file-guard'
+
+export { SINGLE_FILE }
+
 /** The single file opened from disk, as an SME would (PRD §3.9). */
-export const DIST_URL = pathToFileURL(resolve('dist/index.html')).href
+export const DIST_URL = pathToFileURL(SINGLE_FILE).href
 
 /** Scratch files stay inside the repository: node_modules/.tmp is git-ignored. */
 export const TMP = resolve('node_modules/.tmp/e2e')

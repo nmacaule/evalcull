@@ -40,11 +40,11 @@ jobs:
         run: |
           test -n "$CONTENT_LINT_TERMS" || { echo "CONTENT_LINT_TERMS secret is not set"; exit 1; }
           chmod +x scripts/content-lint
-          find dist -type f -print0 | xargs -0 scripts/content-lint files
+          find dist-single -type f -print0 | xargs -0 scripts/content-lint files
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: dist
+          path: dist-single
 
   deploy:
     needs: build

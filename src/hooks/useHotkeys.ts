@@ -64,6 +64,8 @@ export interface HotkeyHandlers {
   isEditorOpen: boolean;
   /** E is held until the focused record arrives; Esc cancels it (DR-012) */
   isEditPending?: boolean;
+  /** Single-key shortcuts on (DR-029, WCAG 2.2 SC 2.1.4); arrows, Tab, Esc and Mod+Enter stay on */
+  characterKeys?: boolean;
 }
 
 /**
@@ -102,6 +104,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     mode,
     groupSize,
     isModalOpen,
+    characterKeys = true,
     isEditorOpen,
     isEditPending = false,
   } = handlers;
@@ -145,7 +148,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (groupSize <= 1) return;
       prefer('left');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   // Right arrow: edit confirm keep OR prefer right
@@ -172,7 +175,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (groupSize <= 1) return;
       prefer('right');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -182,7 +185,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (groupSize <= 1) return;
       prefer('tie');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -192,7 +195,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (groupSize <= 1) return;
       prefer('both_bad');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   // Preference strength: attached to the pair just judged (v3.3, WP 6c decision f)
@@ -202,7 +205,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (!shouldFire(HOTKEY_TABLE[4])) return;
       setStrength(1);
     },
-    { enableOnFormTags: false }
+    { enabled: characterKeys, enableOnFormTags: false }
   );
 
   useHotkeysHook(
@@ -211,7 +214,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (!shouldFire(HOTKEY_TABLE[5])) return;
       setStrength(2);
     },
-    { enableOnFormTags: false }
+    { enabled: characterKeys, enableOnFormTags: false }
   );
 
   useHotkeysHook(
@@ -220,7 +223,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (!shouldFire(HOTKEY_TABLE[6])) return;
       setStrength(3);
     },
-    { enableOnFormTags: false }
+    { enabled: characterKeys, enableOnFormTags: false }
   );
 
   // Decision keys
@@ -230,7 +233,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       decide(getFocusedRef(), 'kept');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -239,7 +242,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       decide(getFocusedRef(), 'rejected');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -248,7 +251,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       decide(getFocusedRef(), 'skipped');
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   // Navigation
@@ -256,6 +259,9 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     'tab',
     (e) => {
       if (isModalOpen || mode !== 'compare') return;
+      // Reserved for candidate focus only with two cards to switch between (DR-023 as amended,
+      // owner, 7 Nov 2026); with one card Tab moves DOM focus as usual
+      if (groupSize <= 1) return;
       e.preventDefault();
       toggleFocus();
     },
@@ -268,7 +274,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       next();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -277,7 +283,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       prev();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -307,7 +313,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       e.preventDefault();
       openEditor();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -339,7 +345,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       undo();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -348,7 +354,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       redo();
     },
-    { enableOnFormTags: false }
+    { enabled: characterKeys, enableOnFormTags: false }
   );
 
   // View toggles
@@ -358,7 +364,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       toggleRaw();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -367,7 +373,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       toggleWhitespace();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -376,7 +382,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       toggleReadingStep();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -385,7 +391,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       cycleFilter();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   // Note: shifted characters with useKey require explicit modifier (react-hotkeys-hook 5.3.3)
@@ -395,7 +401,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       showCheatSheet();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   // Panel hotkeys (WP 6b); preventDefault so the key does not type into the
@@ -406,7 +412,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (isModalOpen) return;
       toggleMetadata?.();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -416,7 +422,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       e.preventDefault();
       openLabels?.();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -426,7 +432,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       e.preventDefault();
       openNotes?.();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -436,7 +442,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       e.preventDefault();
       openGoTo?.();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 
   useHotkeysHook(
@@ -446,7 +452,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       e.preventDefault();
       openSearch?.();
     },
-    { enableOnFormTags: false, useKey: true }
+    { enabled: characterKeys, enableOnFormTags: false, useKey: true }
   );
 }
 

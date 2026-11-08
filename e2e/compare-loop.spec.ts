@@ -20,7 +20,7 @@ test('knockout, undo/redo cursor, digits, strength and the pairs export', async 
   await page.goto(URL)
   await page.getByLabel('JSONL file').setInputFiles({ name: 'knockout.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(FILE) })
   await expect(page.getByText('Prompt 1 of 5')).toBeVisible()
-  await expect(page.getByText('Pair 1 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 1 of 3 · 4 responses')).toBeVisible()
 
   // Tab moves the focus marker to the other card (D-007); E edits the focused candidate
   const cards = page.getByRole('group')
@@ -34,15 +34,15 @@ test('knockout, undo/redo cursor, digits, strength and the pairs export', async 
   await expect(cards.nth(0)).toHaveAttribute('aria-current', 'true')
 
   await page.keyboard.press('ArrowRight')
-  await expect(page.getByText('Pair 2 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 2 of 3 · 4 responses')).toBeVisible()
   await page.keyboard.press('ArrowLeft')
-  await expect(page.getByText('Pair 3 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 3 of 3 · 4 responses')).toBeVisible()
   await page.keyboard.press('ArrowRight')
   await expect(page.getByText('Prompt 2 of 5')).toBeVisible()
 
   await page.keyboard.press('u')
   await expect(page.getByText('Prompt 1 of 5')).toBeVisible()
-  await expect(page.getByText('Pair 3 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 3 of 3 · 4 responses')).toBeVisible()
   await page.keyboard.press('Shift+U')
   await expect(page.getByText('Prompt 1 of 5')).toBeVisible()
   await expect(page.getByText('Judged: right preferred')).toBeVisible()

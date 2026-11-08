@@ -3,7 +3,7 @@
  * The post-build step of npm run build:single (PRD §3.9, §5 Bundle hygiene).
  *
  * 1. Refuses markup a hash cannot cover or that reaches outside the file.
- * 2. Writes dist/THIRD-PARTY-NOTICES from the lockfile and the module ids the
+ * 2. Writes dist-single/THIRD-PARTY-NOTICES from the lockfile and the module ids the
  *    build recorded, and embeds the same text at the end of the body (DR-009).
  * 3. Hashes every inline script and style into the meta CSP, inserted directly
  *    after meta charset (DR-008).
@@ -19,7 +19,8 @@ import { buildPolicy, checkMarkup, insertPolicy, scanInline } from './csp.mjs';
 import { embedNotices, packagesFor, renderNotices } from './notices.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const dist = join(root, 'dist');
+// build:single's own folder, apart from npm run build's dist/ (DR-037, D-112)
+const dist = join(root, 'dist-single');
 const page = join(dist, 'index.html');
 
 function readJson(file) {

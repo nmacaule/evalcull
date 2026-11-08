@@ -8,6 +8,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { AlertText } from '../StatusMark';
+import { keyLabel } from '../../lib/platform';
 
 export interface EditorProps {
   initialValue: string;
@@ -78,7 +79,8 @@ export function Editor({ initialValue, onSave, onCancel, error, turnSwitch }: Ed
         {turnSwitch && (
           <span>↑ at the start or ↓ at the end switches assistant turns while the text is unchanged.</span>
         )}
-        <span>Mod+Enter to save</span>
+        {/* ⌘ Return on Apple platforms, Ctrl+Enter elsewhere (DR-035) */}
+        <span>{keyLabel('mod+enter')} to save</span>
         <span>Esc to cancel</span>
       </div>
     </div>

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 
@@ -13,6 +13,7 @@ import { getTestableHotkeys } from './helpers/hotkeys';
 import { useReviewStore } from '../src/store/useReviewStore';
 import { configureStorage, configureSidecar } from '../src/store/persistence';
 import App from '../src/App';
+import type { RecordFormat } from '../src/types';
 import {
   makeSource as appSource,
   press,
@@ -664,5 +665,240 @@ describe('Z, the reading step (WP 7b)', () => {
     expect(useReviewStore.getState()._dirty).toBe(false);
     expect(useReviewStore.getState().exportSession()).toBe(before);
     expect(before).not.toMatch(/reading/i);
+  });
+});
+
+// The cheat sheet's own instruction (WP 7d, D-111): the key its closing line names
+// must close it. Remedy-neutral: the test reads the key from the line, so it holds
+// whether DR-033 rules that ? closes the sheet or that the line names Esc.
+describe('the cheat sheet (WP 7d)', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  // The keys the line can name, as a keydown on the page
+  const KEY_PRESS: Record<string, () => void> = {
+    '?': () => press('?', 'Slash', { shiftKey: true }),
+    Esc: () => press('Escape', 'Escape'),
+    Escape: () => press('Escape', 'Escape'),
+  };
+
+  // Control for D-111: the harness sees the dialog close, so a failure above is the key's
+  it('Esc closes the cheat sheet', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+
+    press('?', 'Slash', { shiftKey: true });
+    await screen.findByRole('dialog');
+    press('Escape', 'Escape');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('the key the cheat sheet names closes it (D-111)', async () => {
+    const source = appSource(['{"instruction":"q","output":"a"}'], [0], [1]);
+    await loadSource(source, FLAT_IO);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
+
+    press('?', 'Slash', { shiftKey: true });
+    const dialog = await screen.findByRole('dialog');
+    // The key the closing line names: "… Esc closes it." (DR-033), or the earlier "Press ? to toggle …"
+    const CLOSES = /(\?|Esc|Escape) closes it\.$|^Press (\S+) to toggle/;
+    const line = [...dialog.querySelectorAll('div, p')]
+      .map((el) => (el.textContent ?? '').trim())
+      .find((text) => CLOSES.test(text));
+    expect(line).toBeDefined();
+    const match = line!.match(CLOSES)!;
+    const named = match[1] ?? match[2];
+    expect(Object.keys(KEY_PRESS)).toContain(named);
+
+    KEY_PRESS[named]();
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+});
+
+// WCAG 2.2 SC 2.1.4 (WP 7d, D-102, DR-029): the single-key switch in the keyboard shortcuts
+// list turns every character-key shortcut off. Each key runs on a fixture where it acts, and
+// the same key with the switch on (its default) is the positive control.
+describe('the single-key switch (WP 7d)', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  // Two prompts of three in-record candidates: compare mode, text with a space and a line end
+  const COMPARE_LINES = [
+    '{"prompt":"first prompt","candidates":["first answer\\nnext line","second answer","third answer"]}',
+    '{"prompt":"second prompt","candidates":["a b","c d","e f"]}',
+  ];
+  const CANDIDATES_FORMAT: RecordFormat = { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'candidates' };
+  const FLAT_LINES = ['{"instruction":"q one","output":"a one"}', '{"instruction":"q two","output":"a two"}'];
+
+  const state = () => useReviewStore.getState();
+  const compareOf = () => state().decisions.get('0')?.compare ?? [];
+
+  interface Case {
+    key: string;
+    mode: 'compare' | 'single';
+    /** State the key needs, set through the store, not through keys */
+    setup?: () => void;
+    /** The key's own effect, written by hand */
+    acted: (c: HTMLElement) => boolean;
+  }
+  const CASES: Case[] = [
+    { key: '1', mode: 'compare', acted: () => compareOf()[0]?.preference === 'left' },
+    { key: '2', mode: 'compare', acted: () => compareOf()[0]?.preference === 'right' },
+    { key: '=', mode: 'compare', acted: () => compareOf()[0]?.preference === 'tie' },
+    { key: '0', mode: 'compare', acted: () => compareOf()[0]?.preference === 'tie' },
+    { key: 'x', mode: 'compare', acted: () => compareOf()[0]?.preference === 'both_bad' },
+    { key: 'Shift+1', mode: 'compare', setup: () => state().prefer('left'), acted: () => compareOf()[0]?.strength === 1 },
+    { key: 'Shift+2', mode: 'compare', setup: () => state().prefer('left'), acted: () => compareOf()[0]?.strength === 2 },
+    { key: 'Shift+3', mode: 'compare', setup: () => state().prefer('left'), acted: () => compareOf()[0]?.strength === 3 },
+    { key: 'a', mode: 'compare', acted: () => state().decisions.get('0:0')?.status === 'kept' },
+    { key: 'r', mode: 'compare', acted: () => state().decisions.get('0:0')?.status === 'rejected' },
+    { key: 's', mode: 'compare', acted: () => state().decisions.get('0:0')?.status === 'skipped' },
+    { key: 'a', mode: 'single', acted: () => state().decisions.get('0')?.status === 'kept' },
+    { key: 'r', mode: 'single', acted: () => state().decisions.get('0')?.status === 'rejected' },
+    { key: 's', mode: 'single', acted: () => state().decisions.get('0')?.status === 'skipped' },
+    { key: 'j', mode: 'compare', acted: () => state().cursor === 1 },
+    { key: 'k', mode: 'compare', acted: () => state().cursor === 1 },
+    { key: 'e', mode: 'compare', acted: () => screen.queryByLabelText('Edit content') !== null },
+    { key: 'e', mode: 'single', acted: () => screen.queryByLabelText('Edit content') !== null },
+    { key: 'u', mode: 'compare', setup: () => state().decide('0:0', 'kept'), acted: () => state().decisions.get('0:0')?.status !== 'kept' },
+    {
+      key: 'Shift+u',
+      mode: 'compare',
+      setup: () => {
+        state().decide('0:0', 'kept');
+        state().undo();
+      },
+      acted: () => state().decisions.get('0:0')?.status === 'kept',
+    },
+    { key: 't', mode: 'compare', acted: (c) => (card(c, '0:0').textContent ?? '').includes('"candidates":') },
+    // The whitespace marks themselves: the header's counts contain "·" in every state
+    { key: 'w', mode: 'compare', acted: (c) => card(c, '0:0').querySelector('[data-ws-mark]') !== null },
+    { key: 'z', mode: 'compare', acted: () => document.documentElement.hasAttribute('data-reading-step') },
+    { key: 'f', mode: 'compare', acted: () => state().filter !== 'all' },
+    { key: '?', mode: 'compare', acted: () => screen.queryByRole('dialog') !== null },
+    { key: 'm', mode: 'compare', acted: () => screen.queryByRole('region', { name: 'Metadata' }) !== null },
+    { key: 'l', mode: 'compare', acted: () => screen.queryByRole('dialog') !== null },
+    { key: 'n', mode: 'compare', acted: () => screen.queryByRole('dialog') !== null },
+    { key: 'g', mode: 'compare', acted: () => screen.queryByRole('dialog') !== null },
+    { key: '/', mode: 'compare', acted: () => screen.queryByRole('textbox', { name: 'Search' }) !== null },
+  ];
+
+  // Each case from a fresh store, a fresh switch (on) and no reading step
+  async function open(mode: 'compare' | 'single') {
+    resetStore();
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-reading-step');
+    if (mode === 'compare') await loadSource(appSource(COMPARE_LINES, [0, 1], [3, 3]), CANDIDATES_FORMAT);
+    else await loadSource(appSource(FLAT_LINES, [0, 1], [1, 1]), FLAT_IO);
+    const view = render(<App />);
+    await waitFor(() => expect(card(view.container, mode === 'compare' ? '0:0' : '0').textContent).toContain('a'));
+    expect(state().mode).toBe(mode);
+    return view;
+  }
+
+  async function turnOff() {
+    fireEvent.click(screen.getByRole('button', { name: /Keyboard shortcuts/ }));
+    const toggle = await screen.findByLabelText('Single-key shortcuts');
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    press('Escape', 'Escape');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  }
+
+  // Explicit timeout (owner, 7 Nov 2026): 30 App renders; alone 2,370 ms (off) and 588 ms (control),
+  // over the 5,000 ms default when the full suite runs in parallel. Assertions unchanged.
+  it('with the switch off, the arrows, Tab, Esc and Mod+Enter still act (DR-029)', async () => {
+    let view = await open('compare');
+    await turnOff();
+    press('ArrowLeft', 'ArrowLeft');
+    await act(async () => {});
+    expect(compareOf()[0]?.preference).toBe('left');
+    view.unmount();
+
+    view = await open('compare');
+    await turnOff();
+    expect(fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' })).toBe(false);
+    expect(state().focus).toBe(1);
+    view.unmount();
+
+    // The editor through its visible control, then Mod+Enter saves and Esc dismisses the confirmation
+    view = await open('single');
+    await turnOff();
+    fireEvent.click(screen.getByRole('button', { name: /^Edit/ }));
+    const editor = (await screen.findByLabelText('Edit content')) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: 'changed' } });
+    press('Enter', 'Enter', { metaKey: true, ctrlKey: true }, editor);
+    expect(await screen.findByRole('heading', { name: 'Confirm Edit' })).toBeInTheDocument();
+    press('Escape', 'Escape');
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Confirm Edit' })).toBeNull());
+    view.unmount();
+  }, 30_000);
+
+  it('with character-key shortcuts turned off, no character key acts (D-102)', async () => {
+    const acted: string[] = [];
+    for (const c of CASES) {
+      const view = await open(c.mode);
+      await turnOff();
+      c.setup?.();
+      pressKey(c.key);
+      // The same single flush as the control below, so a key the control shows acting here would show
+      await act(async () => {});
+      if (c.acted(view.container)) acted.push(`${c.key} (${c.mode})`);
+      view.unmount();
+    }
+    expect(acted).toEqual([]);
+  }, 30_000);
+
+  // Explicit timeout (owner, 7 Nov 2026): 30 App renders; alone 2,370 ms (off) and 588 ms (control),
+  // over the 5,000 ms default when the full suite runs in parallel. Assertions unchanged.
+  it('with the switch on, its default, each character key acts on the same fixture (control for D-102)', async () => {
+    const idle: string[] = [];
+    for (const c of CASES) {
+      const view = await open(c.mode);
+      c.setup?.();
+      pressKey(c.key);
+      await act(async () => {});
+      if (!c.acted(view.container)) idle.push(`${c.key} (${c.mode})`);
+      view.unmount();
+    }
+    expect(idle).toEqual([]);
+  }, 30_000);
+});
+
+// DR-023 as amended (owner, 7 Nov 2026): in compare mode Tab is reserved for candidate focus
+// only when there are two cards to switch between; with one card it moves DOM focus normally
+describe('Tab with one card (WP 7d, DR-023 amendment)', () => {
+  beforeEach(() => {
+    resetStore();
+    localStorage.clear();
+  });
+  const CANDIDATES_FORMAT: RecordFormat = { kind: 'candidates', promptPath: 'prompt', candidatesPath: 'candidates' };
+
+  it('on a one-candidate prompt, Tab is left to the browser', async () => {
+    await loadSource(
+      appSource(['{"prompt":"p","candidates":["only"]}', '{"prompt":"q","candidates":["a","b"]}'], [0, 1], [1, 2]),
+      CANDIDATES_FORMAT
+    );
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0:0').textContent).toContain('only'));
+    expect(useReviewStore.getState().mode).toBe('compare');
+    // fireEvent returns false when a handler called preventDefault
+    expect(fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' })).toBe(true);
+  });
+
+  it('on a two-candidate prompt, Tab still switches the cards and keeps the browser out (control)', async () => {
+    await loadSource(appSource(['{"prompt":"q","candidates":["a","b"]}'], [0], [2]), CANDIDATES_FORMAT);
+    const { container } = render(<App />);
+    await waitFor(() => expect(card(container, '0:1').textContent).toContain('b'));
+    expect(fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' })).toBe(false);
+    expect(useReviewStore.getState().focus).toBe(1);
   });
 });
