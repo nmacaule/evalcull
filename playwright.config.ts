@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
+import { assertSingleFile } from './e2e/single-file-guard'
+
+// Stops the run at once unless dist-single/index.html is the single file (DR-037, D-112). At config
+// load, before Playwright starts the webServer, which it does before any globalSetup
+assertSingleFile()
 
 // The specs plan.md WP 7c runs in WebKit and Firefox (§5 CSP, Privacy, Compare loop, Keyboard loop);
 // WP 7d: the visible-control walk in all three engines too
@@ -14,8 +19,6 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
-  // Stops the run at once unless dist-single/index.html is the single file (DR-037, D-112)
-  globalSetup: './e2e/global-setup.ts',
   use: {
     baseURL: 'http://localhost:4173',
     trace: 'on-first-retry',

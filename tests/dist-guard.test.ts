@@ -49,7 +49,8 @@ describe('the single-file runs check what they test (D-112)', () => {
         cwd: SCRATCH,
         encoding: 'utf8',
         timeout: 60_000,
-        env: { ...process.env, CI: '' },
+        // CI set: reuseExistingServer is off, so a server left on the port cannot stand in for a real start
+        env: { ...process.env, CI: '1' },
       });
       return {
         run: run.name,
@@ -75,7 +76,8 @@ describe('the single-file runs check what they test (D-112)', () => {
       cwd: folder,
       encoding: 'utf8',
       timeout: 60_000,
-      env: { ...process.env, CI: '' },
+      // CI set: reuseExistingServer is off, so a server left on the port cannot stand in for a real start
+      env: { ...process.env, CI: '1' },
     });
     const text = `${out.stdout}${out.stderr}`;
     expect(out.status).not.toBe(0);
