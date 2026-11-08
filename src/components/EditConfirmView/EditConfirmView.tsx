@@ -48,7 +48,8 @@ export function EditConfirmView({
           </section>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        {/* Wraps at 320 CSS px (SC 1.4.10, D-114) */}
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button variant="primary" onClick={onKeep}>
             Keep Edit ({'\u2192'})
           </Button>

@@ -1,7 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// The specs plan.md WP 7c runs in WebKit and Firefox (§5 CSP, Privacy, Compare loop, Keyboard loop)
-const CROSS_ENGINE = /(single-file|kept-bytes|compare-loop|keyboard-loop)\.spec\.ts$/
+// The specs plan.md WP 7c runs in WebKit and Firefox (§5 CSP, Privacy, Compare loop, Keyboard loop);
+// WP 7d: the visible-control walk in all three engines too
+const CROSS_ENGINE = /(single-file|kept-bytes|compare-loop|keyboard-loop|learnability)\.spec\.ts$/
 
 export default defineConfig({
   testDir: './e2e',
@@ -13,6 +14,8 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
+  // Stops the run at once unless dist-single/index.html is the single file (DR-037, D-112)
+  globalSetup: './e2e/global-setup.ts',
   use: {
     baseURL: 'http://localhost:4173',
     trace: 'on-first-retry',
@@ -24,7 +27,8 @@ export default defineConfig({
     { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testMatch: CROSS_ENGINE },
   ],
   webServer: {
-    command: 'npm run preview',
+    // The single file over http, as CI has served it (DR-037)
+    command: 'npm run preview -- --outDir dist-single',
     url: 'http://localhost:4173',
     reuseExistingServer: !process.env.CI,
   },

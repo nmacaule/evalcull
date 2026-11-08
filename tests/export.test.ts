@@ -308,6 +308,8 @@ describe("exportLines reads unedited lines by run (D-006)", () => {
 });
 
 describe('exportLines reads in windows (D-094, DR-013)', () => {
+  // Explicit timeout (owner, 7 Nov 2026): idle runs took 1,196, 1,216 and 1,239 ms; one run under six
+  // Playwright workers took 5,170 ms and hit the 5,000 ms default. Not a defect; assertions unchanged.
   it('exports 200,000 lines with 2,000 edited in at most ceil(bytes / 8 MB) range reads and no readText (D-094)', async () => {
     const pad = 'x'.repeat(80);
     const lines = Array.from({ length: 200_000 }, (_, i) => `{"id":${i},"pad":"${pad}"}`);
@@ -366,7 +368,7 @@ describe('exportLines reads in windows (D-094, DR-013)', () => {
     expect(out[199_900]).toBe('{"id":199900,"pad":"edited"}');
     expect(out[199_999]).toBe(`{"id":199999,"pad":"${pad}"}`);
     expect(out[200_000]).toBe('');
-  });
+  }, 20_000);
 });
 
 describe('all.decisions.jsonl reads in windows (D-095, DR-013)', () => {

@@ -3,8 +3,11 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Download, Page } from '@playwright/test'
 
+/** The single file build:single writes, apart from npm run build's dist/ (DR-037, D-112). */
+export const SINGLE_FILE = resolve('dist-single/index.html')
+
 /** The single file opened from disk, as an SME would (PRD §3.9). */
-export const DIST_URL = pathToFileURL(resolve('dist/index.html')).href
+export const DIST_URL = pathToFileURL(SINGLE_FILE).href
 
 /** Scratch files stay inside the repository: node_modules/.tmp is git-ignored. */
 export const TMP = resolve('node_modules/.tmp/e2e')

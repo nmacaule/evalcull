@@ -1,7 +1,7 @@
 /**
  * Container for compare mode: shows two candidates side-by-side.
  * WP 6a: Handles Tab focus between left and right candidates.
- * WP 6c: Knockout over N candidates — "Pair k+1 of N−1", the "current best"
+ * WP 6c: Knockout over N candidates — "Comparison k+1 of N−1", the "Winner so far"
  * badge on the incumbent, and the judged preference once the prompt is complete.
  */
 
@@ -36,6 +36,9 @@ export interface CompareViewProps {
   /** Status of each shown candidate (D-016) */
   leftStatus?: DecisionStatus;
   rightStatus?: DecisionStatus;
+  /** Each card's title, "Response k" (DR-032) */
+  leftTitle?: string;
+  rightTitle?: string;
 }
 
 const JUDGED_LABEL: Record<Preference, string> = {
@@ -63,6 +66,8 @@ export function CompareView({
   onEdit,
   leftStatus,
   rightStatus,
+  leftTitle,
+  rightTitle,
 }: CompareViewProps) {
   const incumbentSide = knockout.incumbent?.side;
   const judged = knockout.complete ? knockout.shown?.judged : undefined;
@@ -76,7 +81,7 @@ export function CompareView({
       {/* Pair counter, only for prompts with more than two candidates */}
       {candidateCount > 2 && knockout.shown && (
         <div className="text-center text-chrome text-neutral-11" data-numeric>
-          Pair {knockout.shown.pair + 1} of {knockout.totalPairs}
+          {`Comparison ${knockout.shown.pair + 1} of ${knockout.totalPairs} · ${candidateCount} responses`}
         </div>
       )}
 
@@ -92,7 +97,8 @@ export function CompareView({
           showWhitespace={showWhitespace}
           edits={leftEdits}
           onEdit={onEdit ? (path) => onEdit(leftRef, path) : undefined}
-          badge={incumbentSide === 'left' ? 'current best' : undefined}
+          title={leftTitle}
+          badge={incumbentSide === 'left' ? 'Winner so far' : undefined}
           status={leftStatus}
           preference={markFor('left')}
           compare
@@ -109,7 +115,8 @@ export function CompareView({
           showWhitespace={showWhitespace}
           edits={rightEdits}
           onEdit={onEdit ? (path) => onEdit(rightRef, path) : undefined}
-          badge={incumbentSide === 'right' ? 'current best' : undefined}
+          title={rightTitle}
+          badge={incumbentSide === 'right' ? 'Winner so far' : undefined}
           status={rightStatus}
           preference={markFor('right')}
           compare

@@ -10,30 +10,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { HOTKEY_GROUPS, HOTKEY_TABLE } from '../../lib/hotkeyTable';
+import { HOTKEY_GROUPS, HOTKEY_TABLE, isCharacterKey } from '../../lib/hotkeyTable';
+import { keyLabel } from '../../lib/platform';
 
 export interface CheatSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Single-key shortcuts on (DR-029); the list holds the switch and shows which keys are off */
+  characterKeys?: boolean;
+  onCharacterKeysChange?: (on: boolean) => void;
 }
 
+// The platform's key names (DR-035); letters in capitals, as the action bar shows them (owner, 7 Nov 2026)
 function formatKey(key: string): string {
-  // Format mod key based on platform
-  if (key.toLowerCase().includes('mod')) {
-    const isMac = typeof navigator !== 'undefined' && navigator.platform?.includes('Mac');
-    return key.replace(/mod/gi, isMac ? '\u2318' : 'Ctrl');
-  }
-  // Format special keys
-  return key
-    .replace('ArrowLeft', '\u2190')
-    .replace('ArrowRight', '\u2192')
-    .replace('ArrowUp', '\u2191')
-    .replace('ArrowDown', '\u2193')
-    .replace('Escape', 'Esc')
-    .replace('Shift+', '\u21E7');
+  return keyLabel(key);
 }
 
-export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
+export function CheatSheet({ open, onOpenChange, characterKeys = true, onCharacterKeysChange }: CheatSheetProps) {
+  // A key the switch has turned off is not shown, so no hint names a key that does nothing (DR-029)
+  const live = (key: string) => characterKeys || !isCharacterKey(key);
   // Every entry names its group, so every §2.2 key appears exactly once
   const renderGroup = (title: string, keys: typeof HOTKEY_TABLE) => (
     <div className="mb-4" key={title}>
@@ -52,15 +47,19 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
               )}
             </span>
             {/* Keycaps: text-chrome on neutral-3 in a neutral-7 border (§2.11 screen 8) */}
-            <kbd className="rounded-control border border-neutral-7 bg-neutral-3 px-2 py-1 text-chrome text-neutral-12 whitespace-nowrap">
-              {formatKey(entry.key)}
-              {entry.altKey && (
-                <span className="text-neutral-11">
-                  {' '}
-                  / {formatKey(entry.altKey)}
-                </span>
-              )}
-            </kbd>
+            {live(entry.key) ? (
+              <kbd className="rounded-control border border-neutral-7 bg-neutral-3 px-2 py-1 text-chrome text-neutral-12 whitespace-nowrap">
+                {formatKey(entry.key)}
+                {entry.altKey && live(entry.altKey) && (
+                  <span className="text-neutral-11">
+                    {' '}
+                    / {formatKey(entry.altKey)}
+                  </span>
+                )}
+              </kbd>
+            ) : (
+              <span className="text-neutral-11">off</span>
+            )}
           </div>
         ))}
       </div>
@@ -71,8 +70,22 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-dialog sheet-max overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Keyboard Shortcuts</DialogTitle>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
         </DialogHeader>
+        {/* WCAG 2.2 SC 2.1.4: the mechanism that turns the single-key shortcuts off (DR-029) */}
+        <div className="mt-4 grid gap-1 text-chrome">
+          <label className="flex items-center gap-2 text-neutral-12">
+            <input
+              type="checkbox"
+              checked={characterKeys}
+              onChange={(e) => onCharacterKeysChange?.(e.target.checked)}
+            />
+            Single-key shortcuts
+          </label>
+          <p className="text-neutral-11">
+            When on, letters, numbers and symbols such as ? work as shortcuts. Arrows, Tab, Esc and {keyLabel('mod+enter')} always work.
+          </p>
+        </div>
         <div className="mt-4">
           {HOTKEY_GROUPS.map((group) =>
             renderGroup(
@@ -82,7 +95,8 @@ export function CheatSheet({ open, onOpenChange }: CheatSheetProps) {
           )}
         </div>
         <div className="mt-4 text-chrome text-neutral-11 text-center">
-          Press ? to toggle this dialog
+          {/* Not ?, which the single-key switch turns off (DR-033, D-111) */}
+          Open this list with the Keyboard shortcuts button in the header; Esc closes it.
         </div>
       </DialogContent>
     </Dialog>

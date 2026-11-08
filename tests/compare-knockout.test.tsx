@@ -400,7 +400,7 @@ describe('App over rows sharing a prompt (WP 6c)', () => {
       expect(card(container, '0').textContent).toContain('1');
       expect(card(container, '2').textContent).toContain('3');
     });
-    expect(screen.getByText('Pair 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Comparison 1 of 2 · 3 responses')).toBeInTheDocument();
 
     press('ArrowRight', 'ArrowRight');
     expect(useReviewStore.getState().decisions.get('0')?.compare).toEqual([
@@ -413,9 +413,9 @@ describe('App over rows sharing a prompt (WP 6c)', () => {
     });
     const right = card(container, '2');
     expect(right.textContent).toContain('3');
-    expect(within(right).getByText('current best')).toBeInTheDocument();
-    expect(within(card(container, '5')).queryByText('current best')).toBeNull();
-    expect(screen.getByText('Pair 2 of 2')).toBeInTheDocument();
+    expect(within(right).getByText('Winner so far')).toBeInTheDocument();
+    expect(within(card(container, '5')).queryByText('Winner so far')).toBeNull();
+    expect(screen.getByText('Comparison 2 of 2 · 3 responses')).toBeInTheDocument();
 
     // Edit the right card: Tab, E, type, Mod+Enter
     press('Tab', 'Tab');
@@ -462,7 +462,7 @@ describe('App over rows sharing a prompt (WP 6c)', () => {
 // -----------------------------------------------------------------------------
 
 describe('App over in-record candidates (WP 6c)', () => {
-  it('shows "Pair k of 3" with each card showing its own array element and the badge per round', async () => {
+  it('shows "Comparison k of 3" with each card showing its own array element and the badge per round', async () => {
     const source = makeSource(['{"prompt":"P","candidates":["w","x","y","z"]}'], [0], [4]);
     await loadSource(source, CANDIDATES);
 
@@ -473,21 +473,21 @@ describe('App over in-record candidates (WP 6c)', () => {
       expect(card(container, '0:0').textContent).toContain('w');
     });
     expect(card(container, '0:1').textContent).toContain('x');
-    expect(screen.getByText('Pair 1 of 3')).toBeInTheDocument();
-    expect(screen.queryByText('current best')).toBeNull();
+    expect(screen.getByText('Comparison 1 of 3 · 4 responses')).toBeInTheDocument();
+    expect(screen.queryByText('Winner so far')).toBeNull();
 
     // Left wins: round 2 (even) puts the incumbent 0:0 on the right against 0:2
     press('ArrowLeft', 'ArrowLeft');
-    await waitFor(() => expect(screen.getByText('Pair 2 of 3')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Comparison 2 of 3 · 4 responses')).toBeInTheDocument());
     expect(card(container, '0:2').textContent).toContain('y');
-    expect(within(card(container, '0:0')).getByText('current best')).toBeInTheDocument();
+    expect(within(card(container, '0:0')).getByText('Winner so far')).toBeInTheDocument();
 
     // Left (0:2) wins: round 3 (odd) puts the incumbent 0:2 on the left against 0:3
     press('ArrowLeft', 'ArrowLeft');
-    await waitFor(() => expect(screen.getByText('Pair 3 of 3')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Comparison 3 of 3 · 4 responses')).toBeInTheDocument());
     expect(card(container, '0:3').textContent).toContain('z');
-    expect(within(card(container, '0:2')).getByText('current best')).toBeInTheDocument();
-    expect(within(card(container, '0:3')).queryByText('current best')).toBeNull();
+    expect(within(card(container, '0:2')).getByText('Winner so far')).toBeInTheDocument();
+    expect(within(card(container, '0:3')).queryByText('Winner so far')).toBeNull();
   });
 
   it('shows no pair label for a two-candidate prompt', async () => {
@@ -496,10 +496,10 @@ describe('App over in-record candidates (WP 6c)', () => {
 
     const { container } = render(<App />);
     await waitFor(() => expect(card(container, '0:1').textContent).toContain('x'));
-    expect(screen.queryByText(/^Pair \d+ of \d+$/)).toBeNull();
+    expect(screen.queryByText(/^Comparison \d+ of \d+/)).toBeNull();
   });
 
-  it('candidates.jsonl contents: the first prompt shows "Pair 1 of 2"', async () => {
+  it('candidates.jsonl contents: the first prompt shows "Comparison 1 of 2"', async () => {
     // Hand-built from tests/fixtures/shapes/candidates.jsonl: three prompts with 3, 2 and 4 responses
     const lines = readFileSync(join(import.meta.dirname, 'fixtures/shapes/candidates.jsonl'), 'utf-8')
       .split('\n')
@@ -511,7 +511,7 @@ describe('App over in-record candidates (WP 6c)', () => {
     await loadSource(source, format);
 
     render(<App />);
-    expect(await screen.findByText('Pair 1 of 2')).toBeInTheDocument();
+    expect(await screen.findByText('Comparison 1 of 2 · 3 responses')).toBeInTheDocument();
   });
 });
 

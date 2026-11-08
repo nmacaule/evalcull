@@ -114,7 +114,7 @@ describe('drop while the label and notes panel is open', () => {
     await waitFor(() => expect(card(container, '0').textContent).toContain('ay'));
     fireEvent.click(screen.getByRole('button', { name: 'Configure format' }));
     // A changed field: from here the modal holds a draft (D-069)
-    fireEvent.change(await screen.findByLabelText('Response Path'), { target: { value: 'drafted.for.a' } });
+    fireEvent.change(await screen.findByLabelText('Response field'), { target: { value: 'drafted.for.a' } });
 
     drop('b.jsonl');
 

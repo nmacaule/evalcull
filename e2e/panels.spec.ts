@@ -30,7 +30,8 @@ test('progress counts and the export dialog text', async ({ page }) => {
   await expect(progress).toHaveText(
     '2 / 2 prompts · 1 left · 0 right · 1 tie · 0 both bad · 1 kept · 0 rejected · 0 skipped · 0 edited'
   )
-  await expect(page.getByRole('status').first()).toHaveText('Saved')
+  // The storage indicator, not the shell's hidden resume region (DR-034; owner-approved locator, 7 Nov 2026)
+  await expect(page.locator('[role="status"]:not([data-resume-status])').first()).toHaveText('Saved')
 
   await page.getByRole('button', { name: 'Export' }).click()
   const pairs = page.getByRole('region', { name: 'pairs.jsonl' })

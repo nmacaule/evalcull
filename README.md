@@ -44,7 +44,7 @@ A prompt with more than two candidates is judged as a knockout: the preferred ca
 
 The demo is a single `index.html` with everything inlined. Save it and open it from your disk; it works offline. Your progress is kept in the browser's storage where the browser allows it, which is not guaranteed for a file opened from disk; use **Export → Download session** to keep it, and **Load session** to continue later.
 
-To build it yourself (Node 22.12 or newer): `npm ci && npm run build:single`, then open `dist/index.html`.
+To build it yourself (Node 22.12 or newer): `npm ci && npm run build:single`, then open `dist-single/index.html`.
 
 ## Licence
 

@@ -287,6 +287,8 @@ export interface ReviewState {
   next(): void;
   prev(): void;
   nextUnreviewed(): void;
+  /** The first unreviewed prompt (record in single mode) from the top, the current one included (DR-034 amendment) */
+  firstUnreviewed(): void;
   goTo(i: number): void;
   setFilter(f: ReviewState['filter']): void;
   setMode(m: 'compare' | 'single'): void;
@@ -1543,6 +1545,20 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       if (nextIdx !== null && nextIdx !== state.cursor) {
         set({ cursor: nextIdx });
         scheduleStoreSave();
+      }
+    },
+
+    firstUnreviewed() {
+      const state = get();
+      const total = getPromptCount(state);
+      const sizes = compareSizes(state);
+      for (let i = 0; i < total; i++) {
+        if (isReviewed(state, sizes, i)) continue;
+        if (i !== state.cursor) {
+          set({ cursor: i });
+          scheduleStoreSave();
+        }
+        return;
       }
     },
 

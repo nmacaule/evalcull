@@ -12,13 +12,16 @@ import { StatusMark } from '../StatusMark';
 export interface MetadataPanelProps {
   record: ParsedRecord | null;
   format: RecordFormat;
+  /** The ref the card's title replaced (DR-032) */
+  candidateRef?: string;
 }
 
-export function MetadataPanel({ record, format }: MetadataPanelProps) {
+export function MetadataPanel({ record, format, candidateRef }: MetadataPanelProps) {
   const fields = record?.ok ? unmappedFields(record.data, format) : [];
   return (
     <section aria-label="Metadata" className="mt-6 rounded-panel bg-neutral-2 p-4 text-chrome animate-panel">
       <h2 className="label text-neutral-11 mb-2">Metadata</h2>
+      {candidateRef && <p className="font-mono text-mono text-neutral-11 mb-2">Ref {candidateRef}</p>}
       {!record || !record.ok ? (
         <p className="text-neutral-11">Unparseable line: no fields.</p>
       ) : fields.length === 0 ? (

@@ -16,16 +16,19 @@ import {
 import { Button } from '@/components/ui/button';
 import { useReviewStore } from '../../store/useReviewStore';
 import type { CandidateRef } from '../../types';
+import { keyLabel } from '../../lib/platform';
 
 export interface LabelNotesPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   candidateRef: CandidateRef;
+  /** The candidate in words, e.g. "response 1 of prompt 1" (DR-032); the ref otherwise */
+  subject?: string;
   /** The field focused when the panel opens: L labels, N notes */
   focusField: 'labels' | 'notes';
 }
 
-export function LabelNotesPanel({ open, onOpenChange, candidateRef, focusField }: LabelNotesPanelProps) {
+export function LabelNotesPanel({ open, onOpenChange, candidateRef, subject, focusField }: LabelNotesPanelProps) {
   const [labels, setLabels] = useState<string[]>([]);
   const [draft, setDraft] = useState('');
   const [score, setScore] = useState('');
@@ -88,7 +91,7 @@ export function LabelNotesPanel({ open, onOpenChange, candidateRef, focusField }
         <DialogHeader>
           <DialogTitle>Labels and notes</DialogTitle>
           <DialogDescription>
-            For {candidateRef}. Mod+Enter saves, Esc closes without saving.
+            For {subject ?? candidateRef}. {keyLabel('mod+enter')} saves, Esc closes without saving.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3 text-chrome">

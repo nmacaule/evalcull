@@ -36,6 +36,12 @@ export interface DropzoneProps {
   blockedReason?: string | null;
 }
 
+const SAMPLE_TASKS: Record<string, string> = {
+  candidates: 'pick the best response for each prompt',
+  conversation: 'review chat transcripts one by one',
+  preference: 'check chosen and rejected pairs',
+};
+
 export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: DropzoneProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,6 +175,13 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
   return (
     <div data-screen="empty" className="min-h-screen bg-neutral-1 text-neutral-12 flex flex-col items-center justify-center gap-4 p-8">
       <h1 className="text-heading font-semibold">evalcull</h1>
+      {/* What evalcull does and what it produces (§2.11 screen 1, DR-031) */}
+      <p className="text-chrome text-neutral-11">
+        Review model responses in a JSONL file: pick the better of two, keep or reject, and fix the text.
+      </p>
+      <p className="text-chrome text-neutral-11">
+        You get pairs.jsonl for preference tuning, kept.jsonl for fine-tuning and all.decisions.jsonl with every decision. Nothing leaves your computer.
+      </p>
       <p className="text-chrome text-neutral-11">Drop a JSONL file anywhere on this page, or open one.</p>
       {/* The drop target (§2.11 screen 1): bordered in neutral-9 at radius 6 */}
       <div className="flex flex-col items-center gap-4 rounded-panel border border-neutral-9 p-8">
@@ -198,17 +211,20 @@ export function Dropzone({ loaded, onConfirmOpenChange, blockedReason }: Dropzon
         />
         {/* The embedded samples open through the same checks as a drop (DR-010) */}
         {/* The candidates sample is the screen's one primary action (DR-019) */}
-        <div className="flex flex-wrap justify-center gap-2">
+        <div className="flex flex-wrap justify-center gap-4">
           {SAMPLES.map((sample) => (
-            <Button
-              key={sample.name}
-              variant={sample.label === 'candidates' ? 'primary' : 'secondary'}
-              size="sm"
-              disabled={isLoading}
-              onClick={() => accept([sampleFile(sample)])}
-            >
-              Open sample: {sample.label}
-            </Button>
+            <div key={sample.name} className="flex flex-col items-center gap-1">
+              <Button
+                variant={sample.label === 'candidates' ? 'primary' : 'secondary'}
+                size="sm"
+                disabled={isLoading}
+                onClick={() => accept([sampleFile(sample)])}
+              >
+                Open sample: {sample.label}
+              </Button>
+              {/* Each sample's task, beside its unchanged name (DR-031) */}
+              <span className="text-chrome text-neutral-11">{SAMPLE_TASKS[sample.label]}</span>
+            </div>
           ))}
         </div>
       </div>

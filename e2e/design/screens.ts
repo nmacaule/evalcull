@@ -56,7 +56,7 @@ const cards = (page: Page) => page.getByRole('group')
 
 async function compare(page: Page): Promise<void> {
   await open(page, 'compare.jsonl', COMPARE)
-  await expect(page.getByText('Pair 1 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 1 of 3 · 4 responses')).toBeVisible()
 }
 
 async function single(page: Page): Promise<void> {
@@ -77,9 +77,11 @@ export interface ScreenState {
   go: (page: Page) => Promise<void>
   /** Tab is candidate focus here (§2.2), so the walk goes backward (DR-023) */
   backwardWalk?: boolean
+  /** A first-use hint state (DR-030); every other state starts with the hints seen, as signed off */
+  hints?: boolean
 }
 
-export const SCREENS: ScreenState[] = [
+const STATES: ScreenState[] = [
   {
     n: 1,
     screen: 'empty',
@@ -125,7 +127,7 @@ export const SCREENS: ScreenState[] = [
     go: async (page) => {
       await compare(page)
       await page.keyboard.press('ArrowLeft')
-      await expect(page.getByText('Pair 2 of 3')).toBeVisible()
+      await expect(page.getByText('Comparison 2 of 3 · 4 responses')).toBeVisible()
     },
     backwardWalk: true,
   },
@@ -153,11 +155,11 @@ export const SCREENS: ScreenState[] = [
     go: async (page) => {
       await compare(page)
       await page.keyboard.press('ArrowRight')
-      await expect(page.getByText('Pair 2 of 3')).toBeVisible()
+      await expect(page.getByText('Comparison 2 of 3 · 4 responses')).toBeVisible()
       await page.keyboard.press('a')
       await page.keyboard.press('Tab')
       await page.keyboard.press('r')
-      await expect(page.getByText('current best')).toBeVisible()
+      await expect(page.getByText('Winner so far', { exact: true })).toBeVisible()
     },
     backwardWalk: true,
   },
@@ -456,7 +458,7 @@ export const SCREENS: ScreenState[] = [
     go: async (page) => {
       await single(page)
       await page.getByRole('button', { name: 'Configure format' }).click()
-      await page.getByLabel('Response Path').fill('')
+      await page.getByLabel('Response field').fill('')
       await expect(page.getByRole('button', { name: 'Apply' })).toBeDisabled()
     },
   },
@@ -468,9 +470,138 @@ export const SCREENS: ScreenState[] = [
       await single(page)
       // The binding is shift+? (react-hotkeys-hook's modifier match; STATUS WP 6a)
       await page.keyboard.press('Shift+?')
-      await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Keyboard shortcuts' })).toBeVisible()
+    },
+  },
+  // WP 7d: the new surfaces (DR-028 to DR-034), each in both themes
+  {
+    n: 8,
+    screen: 'cheat-sheet',
+    state: 'single-keys-off',
+    go: async (page) => {
+      await single(page)
+      await page.getByRole('button', { name: /Keyboard shortcuts/ }).click()
+      await page.getByLabel('Single-key shortcuts').uncheck()
+      await expect(page.getByText('off').first()).toBeVisible()
+    },
+  },
+  {
+    n: 2,
+    screen: 'header',
+    state: 'resumed',
+    go: async (page) => {
+      // The embedded sample keeps its fingerprint across a reload, so its session restores
+      await page.goto(DIST_URL)
+      await page.getByRole('button', { name: 'Open sample: candidates' }).click()
+      await expect(page.getByText('Comparison 1 of 3 · 4 responses')).toBeVisible()
+      await page.keyboard.press('ArrowLeft')
+      await expect(page.locator('[role="status"]:not([data-resume-status])').filter({ hasText: /^Saved$/ })).toBeVisible()
+      await page.reload()
+      await page.getByRole('button', { name: 'Open sample: candidates' }).click()
+      await expect(page.locator('[data-resume-line]')).toBeVisible()
+    },
+    backwardWalk: true,
+  },
+  {
+    n: 3,
+    screen: 'compare',
+    state: 'first-use-hint',
+    hints: true,
+    go: async (page) => {
+      await compare(page)
+      await expect(page.locator('[data-hint]')).toBeVisible()
+    },
+    backwardWalk: true,
+  },
+  {
+    n: 3,
+    screen: 'compare',
+    state: 'round-2-hint',
+    hints: true,
+    go: async (page) => {
+      await compare(page)
+      await page.keyboard.press('ArrowLeft')
+      await expect(page.getByText(/stays as Winner so far/)).toBeVisible()
+    },
+    backwardWalk: true,
+  },
+  {
+    n: 3,
+    screen: 'compare',
+    state: 'strength-pressed',
+    go: async (page) => {
+      await compare(page)
+      await page.keyboard.press('ArrowLeft')
+      await page.keyboard.press('Shift+Digit2')
+      await expect(page.getByRole('button', { name: /^Better/ })).toHaveAttribute('aria-pressed', 'true')
+    },
+    backwardWalk: true,
+  },
+  {
+    n: 3,
+    screen: 'compare',
+    state: 'action-hover',
+    go: async (page) => {
+      await compare(page)
+      await page.getByRole('region', { name: 'Review actions' }).getByRole('button', { name: /^Keep/ }).hover()
+    },
+    backwardWalk: true,
+  },
+  {
+    n: 3,
+    screen: 'compare',
+    state: 'one-candidate',
+    go: async (page) => {
+      await open(page, 'one.jsonl', '{"prompt":"Only","responses":["just one"]}\n{"prompt":"Q","responses":["x","y"]}\n')
+      await expect(page.getByText('Only one candidate for this prompt')).toBeVisible()
+      await expect(page.getByRole('button', { name: /^Left is better/ })).toBeDisabled()
+    },
+    // One card: Tab moves DOM focus as usual (DR-023 as amended, owner, 7 Nov 2026), so a forward walk
+  },
+  {
+    n: 4,
+    screen: 'single',
+    state: 'first-use-hint',
+    hints: true,
+    go: async (page) => {
+      await single(page)
+      await expect(page.locator('[data-hint]')).toBeVisible()
     },
   },
 ]
+
+/** Every hint already seen, so a state shows as signed off (owner, 7 Nov 2026) */
+async function hintsSeen(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('evalcull.hints', JSON.stringify(['compare', 'round2', 'single']))
+      // Single-key shortcuts on, their default: one state turns them off (DR-029)
+      localStorage.removeItem('evalcull.shortcuts')
+    } catch {
+      // A page without storage shows no hint anyway (DR-030)
+    }
+  })
+}
+
+/** No hint seen yet: added after any earlier state's script on the same page, which it undoes */
+async function hintsUnseen(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    try {
+      localStorage.removeItem('evalcull.hints')
+      localStorage.removeItem('evalcull.shortcuts')
+    } catch {
+      // A page without storage shows no hint
+    }
+  })
+}
+
+export const SCREENS: ScreenState[] = STATES.map((s) => ({
+  ...s,
+  go: async (page: Page) => {
+    // Init scripts stay on a page and run in the order added, so the last one decides (motion runs every state on one page)
+    await (s.hints ? hintsUnseen(page) : hintsSeen(page))
+    await s.go(page)
+  },
+}))
 
 export { compare, single, conversation }

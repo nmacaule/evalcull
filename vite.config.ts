@@ -42,6 +42,8 @@ export default defineConfig(({ mode }) => {
   const single = mode === 'single'
   return {
     base: single ? './' : '/',
+    // The one file goes to its own folder, so npm run build (the type check) never replaces it (DR-037, D-112)
+    build: { outDir: single ? 'dist-single' : 'dist' },
     plugins: [react(), tailwindcss(), ...(single ? [viteSingleFile(), recordModules('main')] : [])],
     worker: {
       plugins: () => (single ? [recordModules('worker')] : []),

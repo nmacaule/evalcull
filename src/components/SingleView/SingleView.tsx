@@ -18,6 +18,8 @@ export interface SingleViewProps {
   edits?: Record<string, EditValue>;
   onEdit?: (path: string) => void;
   status?: DecisionStatus;
+  /** The card's title, "Record n" or "Response 1" (DR-032) */
+  title?: string;
 }
 
 export function SingleView({
@@ -30,6 +32,7 @@ export function SingleView({
   edits,
   onEdit,
   status,
+  title,
 }: SingleViewProps) {
   return (
     <div className="max-w-column mx-auto">
@@ -37,6 +40,7 @@ export function SingleView({
         record={record}
         rawText={rawText}
         candidateRef={candidateRef}
+        title={title}
         format={format}
         focused={true}
         showRaw={showRaw}

@@ -98,3 +98,50 @@ test('the single-mode keyboard loop', async ({ page }) => {
   await page.keyboard.press('f')
   await expect(page.getByText('Filter: kept')).toBeVisible()
 })
+
+// PRD §5 Keyboard loop (v3.6, DR-028, DR-029): with single-key shortcuts off, no character key acts,
+// and every action still works from its visible control; the arrows and Esc still act
+test('with single-key shortcuts off, the loop runs from the action bar', async ({ page }) => {
+  await page.goto(URL)
+  await page.getByLabel('JSONL file').setInputFiles({ name: 'keys.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(FILE) })
+  await expect(page.getByText('Record 1 of 3')).toBeVisible()
+  await page.getByRole('button', { name: /^Keyboard shortcuts/ }).click()
+  await page.getByLabel('Single-key shortcuts').uncheck()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  const bar = page.getByRole('region', { name: 'Review actions' })
+  // Each key alone, its own effect absent, written by hand
+  const card = page.getByRole('group').first()
+  const absent: Record<string, () => Promise<void>> = {
+    a: () => expect(page.getByTestId('progress-text')).toContainText('0 kept'),
+    r: () => expect(page.getByTestId('progress-text')).toContainText('0 rejected'),
+    s: () => expect(page.getByTestId('progress-text')).toContainText('0 skipped'),
+    j: () => expect(page.getByText('Record 1 of 3')).toBeVisible(),
+    k: () => expect(page.getByText('Record 1 of 3')).toBeVisible(),
+    e: () => expect(page.getByLabel('Edit content')).toHaveCount(0),
+    t: () => expect(card).not.toContainText('"instruction"'),
+    w: () => expect(card.locator('[data-ws-mark]')).toHaveCount(0),
+    m: () => expect(page.getByRole('region', { name: 'Metadata' })).toHaveCount(0),
+    g: () => expect(page.getByRole('dialog')).toHaveCount(0),
+    f: () => expect(bar.getByRole('button', { name: /^Filter: all/ })).toBeVisible(),
+  }
+  for (const [key, check] of Object.entries(absent)) {
+    await page.keyboard.press(key)
+    await check()
+  }
+  await bar.getByRole('button', { name: /^Keep/ }).click()
+  await expect(page.getByText('Record 2 of 3')).toBeVisible()
+  await bar.getByRole('button', { name: /^Reject/ }).click()
+  await expect(page.getByTestId('progress-text')).toContainText('1 kept · 1 rejected')
+  // U and Shift+U, each with something to act on: neither does
+  await page.keyboard.press('u')
+  await expect(page.getByTestId('progress-text')).toContainText('1 kept · 1 rejected')
+  await bar.getByRole('button', { name: /^Undo/ }).click()
+  await expect(page.getByTestId('progress-text')).toContainText('1 kept · 0 rejected')
+  await page.keyboard.press('Shift+U')
+  await expect(page.getByTestId('progress-text')).toContainText('1 kept · 0 rejected')
+  await bar.getByRole('button', { name: /^Edit/ }).click()
+  await expect(page.getByLabel('Edit content')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('Edit content')).toHaveCount(0)
+})

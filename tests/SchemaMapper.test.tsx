@@ -37,7 +37,7 @@ describe("SchemaMapper Tab order (D-007)", () => {
 
   it('visits the fields, then the footer buttons, then Close, with no positive tabindex', () => {
     const tabbable = renderFlat();
-    expect(tabbable.map(nameOf)).toEqual(['Data Shape', 'Prompt Path', 'Response Path', 'Cancel', 'Apply', 'Close']);
+    expect(tabbable.map(nameOf)).toEqual(['Record type', 'Prompt field', 'Response field', 'Cancel', 'Apply', 'Close']);
     for (const el of tabbable) {
       expect(Number(el.getAttribute('tabindex') ?? 0)).toBeLessThanOrEqual(0);
     }
@@ -77,8 +77,8 @@ describe('SchemaMapper', () => {
       />
     );
 
-    expect(screen.getByText('Configure Record Format')).toBeInTheDocument();
-    expect(screen.getByLabelText('Data Shape')).toBeInTheDocument();
+    expect(screen.getByText('How to read this file')).toBeInTheDocument();
+    expect(screen.getByLabelText('Record type')).toBeInTheDocument();
   });
 
   it('shows messages fields when messages shape selected', () => {
@@ -95,11 +95,11 @@ describe('SchemaMapper', () => {
     );
 
     // Select messages shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'messages' } });
 
     // Check messages-specific fields appear
-    expect(screen.getByLabelText('Messages Path')).toBeInTheDocument();
+    expect(screen.getByLabelText('Messages field')).toBeInTheDocument();
     expect(screen.getByLabelText('Role Key')).toBeInTheDocument();
     expect(screen.getByLabelText('Content Key')).toBeInTheDocument();
   });
@@ -118,15 +118,15 @@ describe('SchemaMapper', () => {
     );
 
     // Select flat shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'flat' } });
 
     // Enter prompt path
-    const promptInput = screen.getByLabelText('Prompt Path');
+    const promptInput = screen.getByLabelText('Prompt field');
     fireEvent.change(promptInput, { target: { value: 'prompt' } });
 
     // Enter response path
-    const responseInput = screen.getByLabelText('Response Path');
+    const responseInput = screen.getByLabelText('Response field');
     fireEvent.change(responseInput, { target: { value: 'response' } });
 
     // Preview should show resolved values
@@ -149,14 +149,14 @@ describe('SchemaMapper', () => {
     );
 
     // Select flat shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'flat' } });
 
     // Enter paths
-    const promptInput = screen.getByLabelText('Prompt Path');
+    const promptInput = screen.getByLabelText('Prompt field');
     fireEvent.change(promptInput, { target: { value: 'prompt' } });
 
-    const responseInput = screen.getByLabelText('Response Path');
+    const responseInput = screen.getByLabelText('Response field');
     fireEvent.change(responseInput, { target: { value: 'response' } });
 
     // Click Apply
@@ -188,11 +188,11 @@ describe('SchemaMapper', () => {
     );
 
     // Select messages shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'messages' } });
 
     // Enter path with negative index
-    const messagesInput = screen.getByLabelText('Messages Path');
+    const messagesInput = screen.getByLabelText('Messages field');
     fireEvent.change(messagesInput, { target: { value: 'messages' } });
 
     // Apply
@@ -222,7 +222,7 @@ describe('SchemaMapper', () => {
     );
 
     // Select messages shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'messages' } });
 
     // Check role mapping section appears
@@ -272,7 +272,7 @@ describe('SchemaMapper', () => {
     );
 
     // Select flat shape
-    const shapeSelect = screen.getByLabelText('Data Shape');
+    const shapeSelect = screen.getByLabelText('Record type');
     fireEvent.change(shapeSelect, { target: { value: 'flat' } });
 
     // Leave paths empty

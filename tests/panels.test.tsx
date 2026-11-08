@@ -140,16 +140,16 @@ describe('cards (WP 6b defects)', () => {
     const { container } = render(<App />);
     await waitFor(() => expect(card(container, '0').textContent).toContain('a'));
     fireEvent.click(screen.getByRole('button', { name: 'Configure format' }));
-    fireEvent.change(await screen.findByLabelText('Response Path'), { target: { value: 'drafted.for.a' } });
+    fireEvent.change(await screen.findByLabelText('Response field'), { target: { value: 'drafted.for.a' } });
 
     await act(async () => {
       await loadSource(makeSource(['{"instruction":"r","output":"b"}'], [0], [1], { fingerprint: 'fp-b' }), FLAT_IO);
     });
-    if (!screen.queryByLabelText('Response Path')) {
+    if (!screen.queryByLabelText('Response field')) {
       fireEvent.click(screen.getByRole('button', { name: 'Configure format' }));
     }
 
-    expect((await screen.findByLabelText('Response Path') as HTMLInputElement).value).toBe('output');
+    expect((await screen.findByLabelText('Response field') as HTMLInputElement).value).toBe('output');
   });
 });
 

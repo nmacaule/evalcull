@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { DIST_URL, downloadExport, dropFile, watchCsp, watchCspExceptWebKitSelect, writeTmp } from './helpers'
+import { DIST_URL, SINGLE_FILE, downloadExport, dropFile, watchCsp, watchCspExceptWebKitSelect, writeTmp } from './helpers'
 
 // WP 7 (plan.md WP 7 gate; PRD §3.9, §5 CSP, Privacy, TTFV): the single file
 // opened from file://. LIVE_URL runs the CSP, privacy and TTFV tests against
@@ -30,9 +30,9 @@ test('zero CSP violations through the whole loop', async ({ page, browserName })
   const violations = async () => (await watched()).violations
   await page.goto(URL)
   await page.getByRole('button', { name: 'Open sample: candidates' }).click()
-  await expect(page.getByText('Pair 1 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 1 of 3 · 4 responses')).toBeVisible()
   await page.keyboard.press('ArrowLeft')
-  await expect(page.getByText('Pair 2 of 3')).toBeVisible()
+  await expect(page.getByText('Comparison 2 of 3 · 4 responses')).toBeVisible()
 
   const openAndClose = async (open: () => Promise<void>) => {
     await open()
@@ -87,7 +87,7 @@ test('DR-026: the WebKit select ignore is WebKit only; an author style on a sele
 })
 
 // D-105 (WP 7c): served over http, Firefox asks for /favicon.ico, which img-src data: blocks;
-// the page declares its own icon. vite preview serves the build:single output in dist
+// the page declares its own icon. vite preview serves the build:single output in dist-single
 test('D-105: no CSP violation from the browser icon request over http', async ({ page }) => {
   const violations = await watchCsp(page)
   await page.goto(process.env.LIVE_URL ?? '/')
@@ -119,12 +119,41 @@ test('makes no request outside the file', async ({ page }) => {
   expect(others).toEqual([])
 })
 
+// WP 7d (plan step 2.7; §5 CSP and Privacy): the new surfaces in use raise no CSP report and make
+// no request: the first-use hint, the single-key switch, the action bar and the resume line
+test('the learnability surfaces raise no CSP violation and make no request', async ({ page, browserName }) => {
+  const watched = await watchCspExceptWebKitSelect(page, browserName)
+  const requests: string[] = []
+  page.on('request', (r) => requests.push(r.url()))
+  await page.goto(URL)
+  await page.getByRole('button', { name: 'Open sample: candidates' }).click()
+  await expect(page.locator('[data-hint]')).toBeVisible()
+  await page.getByRole('button', { name: 'Got it' }).click()
+  await page.getByRole('button', { name: /^Keyboard shortcuts/ }).click()
+  await page.getByLabel('Single-key shortcuts').uncheck()
+  await page.getByLabel('Single-key shortcuts').check()
+  await page.keyboard.press('Escape')
+  const bar = page.getByRole('region', { name: 'Review actions' })
+  await bar.getByRole('button', { name: /^Left is better/ }).click()
+  await bar.getByRole('button', { name: /^Better/ }).click()
+  await bar.getByRole('button', { name: /^Details/ }).click()
+  await expect(page.locator('[role="status"]:not([data-resume-status])').filter({ hasText: /^Saved$/ })).toBeVisible()
+  await page.reload()
+  await page.getByRole('button', { name: 'Open sample: candidates' }).click()
+  await expect(page.locator('[data-resume-line]')).toBeVisible()
+  expect((await watched()).violations).toEqual([])
+  const allowed = process.env.LIVE_URL ? [new globalThis.URL(URL).href] : []
+  expect(requests.filter((u) => !/^(file|blob|data):/.test(u) && !allowed.includes(u))).toEqual([])
+})
+
 test('first card within 5 s', async ({ page }) => {
   const start = Date.now()
   await page.goto(URL)
   await page.getByRole('button', { name: 'Open sample: candidates' }).click()
   await expect(page.getByRole('group').first()).toBeVisible()
   expect(Date.now() - start).toBeLessThan(5000)
+  // A card, not another group: the action region is a region (DR-028)
+  await expect(page.getByRole('group').first()).toHaveAttribute('data-candidate-ref', /.+/)
 })
 
 test.describe('the shipped file', () => {
@@ -144,7 +173,7 @@ test.describe('the shipped file', () => {
     await cand.goto(DIST_URL)
     await cand.getByLabel('JSONL file').setInputFiles({ name: 'cand.jsonl', mimeType: 'application/jsonl', buffer: Buffer.from(CANDIDATES) })
     await expect(cand.getByText('Prompt 1 of 2')).toBeVisible()
-    await expect(cand.getByText('Pair 1 of 3')).toBeVisible()
+    await expect(cand.getByText('Comparison 1 of 3 · 4 responses')).toBeVisible()
     await cand.close()
   })
 
@@ -163,13 +192,13 @@ test.describe('the shipped file', () => {
     collect(sample)
     await sample.goto(DIST_URL)
     await sample.getByRole('button', { name: 'Open sample: candidates' }).click()
-    const sampleOpened = sample.getByText('Pair 1 of 3').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+    const sampleOpened = sample.getByText('Comparison 1 of 3 · 4 responses').waitFor({ timeout: 10_000 }).then(() => true, () => false)
 
     const disk = await browser.newPage()
     collect(disk)
     await disk.goto(DIST_URL)
     await disk.getByLabel('JSONL file').setInputFiles(writeTmp('d100.jsonl', CANDIDATES))
-    const diskOpened = disk.getByText('Pair 1 of 3').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+    const diskOpened = disk.getByText('Comparison 1 of 3 · 4 responses').waitFor({ timeout: 10_000 }).then(() => true, () => false)
 
     const opened = { sample: await sampleOpened, disk: await diskOpened }
     process.stdout.write(`D-100 collected (${test.info().project.name}):\n${messages.join('\n')}\n`)
@@ -217,7 +246,7 @@ test.describe('the shipped file', () => {
   })
 
   test('notices are embedded', async () => {
-    const html = readFileSync(resolve('dist/index.html'))
+    const html = readFileSync(SINGLE_FILE)
     const text = html.toString('utf8')
     const body = text.indexOf('<body>')
     const comment = text.indexOf('<!--', body)
