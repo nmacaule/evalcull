@@ -336,6 +336,8 @@ describe('the reader with the real worker handler', () => {
     file.changed = true;
     const failed = track(reader.regroup({ kind: 'flat', promptPath: 'a', responsePath: 'a' }));
     await settle(() => failed.state !== 'pending');
+    // Asserted after each wait, so each settle() stays under the test timeout on its own (D-116)
+    expect(failed.state).toBe('rejected');
     file.changed = false;
     const next = track(reader.regroup({ kind: 'flat', promptPath: 'a', responsePath: 'a' }));
     await settle(() => next.state !== 'pending');

@@ -127,10 +127,13 @@ describe('readJsonl regroup', () => {
   it('keeps at most two chunks in flight until the worker takes them', async () => {
     // 9 MiB: chunks of 4, 4 and 1 MiB
     const file = new Blob([new Uint8Array(9 * 1024 * 1024)]);
-    // Every slice the reader makes and the read of it (D-117): the reader slices before it awaits a read
+    // The reader's calls to file.slice, counted (D-117, owner's ruling), and the read of each slice,
+    // which the wait below needs: the reader slices before it awaits a read
+    let slices = 0;
     const reads: Promise<ArrayBuffer>[] = [];
     const slice = file.slice.bind(file);
     file.slice = (...args: Parameters<Blob['slice']>) => {
+      slices++;
       const part = slice(...args);
       const read = part.arrayBuffer.bind(part);
       part.arrayBuffer = () => {
@@ -152,7 +155,7 @@ describe('readJsonl regroup', () => {
       for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     }
     const whileHeld = fake.posted.filter((m) => m.type === 'chunk').length;
-    const slicesWhileHeld = reads.length;
+    const slicesWhileHeld = slices;
 
     fake.withholdAcks = false;
     for (const ack of fake.heldAcks.splice(0)) ack();
